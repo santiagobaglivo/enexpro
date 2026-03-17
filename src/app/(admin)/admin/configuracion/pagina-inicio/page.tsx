@@ -1,0 +1,1555 @@
+"use client";
+
+import { useEffect, useState, useCallback, useRef } from "react";
+import { supabase } from "@/lib/supabase";
+import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Separator } from "@/components/ui/separator";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  ArrowLeft,
+  Monitor,
+  Tablet,
+  Smartphone,
+  Save,
+  ExternalLink,
+  ChevronUp,
+  ChevronDown,
+  Eye,
+  EyeOff,
+  Trash2,
+  Plus,
+  GripVertical,
+  X,
+  Check,
+  Loader2,
+  Layout,
+  ShoppingBag,
+  Star,
+  Truck,
+  Shield,
+  RefreshCw,
+  Headphones,
+  Megaphone,
+  FileText,
+  ChevronDown as ChevronDownIcon,
+  Settings,
+  MousePointer,
+  Image,
+  Package,
+  Pencil,
+  DollarSign,
+  Zap,
+  ShoppingCart,
+} from "lucide-react";
+import type { LucideIcon } from "lucide-react";
+import Link from "next/link";
+
+// ── Types ──────────────────────────────────────────────────────────────────
+
+interface Bloque {
+  id: string;
+  tipo: string;
+  titulo: string;
+  orden: number;
+  activo: boolean;
+  config: Record<string, unknown>;
+}
+
+interface BlockTypeDef {
+  tipo: string;
+  label: string;
+  description: string;
+  icon: LucideIcon;
+  defaultTitulo: string;
+  defaultConfig: Record<string, unknown>;
+}
+
+// ── Block type definitions ─────────────────────────────────────────────────
+
+const BLOCK_TYPES: BlockTypeDef[] = [
+  {
+    tipo: "hero",
+    label: "Hero Banner",
+    description: "Banner principal con gradiente y botones",
+    icon: Monitor,
+    defaultTitulo: "Hero Banner",
+    defaultConfig: {
+      titulo: "Bienvenido a nuestra tienda",
+      subtitulo: "Encontrá los mejores productos",
+      boton_texto: "Ver productos",
+      boton_link: "/tienda/productos",
+      boton_secundario_texto: "",
+      boton_secundario_link: "",
+      color_inicio: "#4f46e5",
+      color_fin: "#7c3aed",
+    },
+  },
+  {
+    tipo: "trust_badges",
+    label: "Badges de Confianza",
+    description: "Iconos de confianza en fila",
+    icon: Shield,
+    defaultTitulo: "Badges de Confianza",
+    defaultConfig: {
+      items: [
+        { icono: "Truck", titulo: "Envío gratis", subtitulo: "En compras +$50.000" },
+        { icono: "Shield", titulo: "Pago seguro", subtitulo: "Todas las tarjetas" },
+        { icono: "RefreshCw", titulo: "Devoluciones", subtitulo: "30 días" },
+        { icono: "Headphones", titulo: "Soporte", subtitulo: "Lun a Vie" },
+      ],
+    },
+  },
+  {
+    tipo: "categorias_destacadas",
+    label: "Categorías Destacadas",
+    description: "Grilla de categorías de la tienda",
+    icon: Layout,
+    defaultTitulo: "Categorías Destacadas",
+    defaultConfig: { titulo_seccion: "Categorías Destacadas", max_items: 6 },
+  },
+  {
+    tipo: "productos_destacados",
+    label: "Productos Destacados",
+    description: "Grilla de productos destacados",
+    icon: ShoppingBag,
+    defaultTitulo: "Productos Destacados",
+    defaultConfig: {
+      titulo_seccion: "Productos Destacados",
+      max_items: 8,
+      orden: "recientes",
+    },
+  },
+  {
+    tipo: "banner_promo",
+    label: "Banner Promocional",
+    description: "Banner con color de fondo y CTA",
+    icon: Megaphone,
+    defaultTitulo: "Banner Promocional",
+    defaultConfig: {
+      titulo: "Promoción Especial",
+      subtitulo: "Hasta 30% de descuento",
+      boton_texto: "Ver ofertas",
+      link: "/tienda/productos",
+      color_fondo: "#4f46e5",
+    },
+  },
+  {
+    tipo: "por_que_elegirnos",
+    label: "Por Qué Elegirnos",
+    description: "3 tarjetas con iconos y texto",
+    icon: Star,
+    defaultTitulo: "Por Qué Elegirnos",
+    defaultConfig: {
+      titulo_seccion: "¿Por qué elegirnos?",
+      cards: [
+        { icono: "Star", titulo: "Calidad", descripcion: "Productos de primera calidad" },
+        { icono: "Truck", titulo: "Envío rápido", descripcion: "Entrega en 24-48hs" },
+        { icono: "Shield", titulo: "Garantía", descripcion: "Garantía en todos los productos" },
+      ],
+    },
+  },
+  {
+    tipo: "texto_libre",
+    label: "Texto Libre",
+    description: "Bloque de texto o HTML personalizado",
+    icon: FileText,
+    defaultTitulo: "Texto Libre",
+    defaultConfig: { contenido: "" },
+  },
+  {
+    tipo: "imagen_banner",
+    label: "Imagen Banner",
+    description: "Imagen de ancho completo con link",
+    icon: Image,
+    defaultTitulo: "Imagen Banner",
+    defaultConfig: { url_imagen: "", link: "", alt: "", alto: "mediano" },
+  },
+];
+
+const ICON_OPTIONS = [
+  "Truck", "Shield", "RefreshCw", "Headphones", "Star", "ShoppingBag", "Settings", "Check",
+];
+
+const ICON_MAP: Record<string, LucideIcon> = {
+  Truck, Shield, RefreshCw, Headphones, Star, ShoppingBag, Settings, Check,
+  DollarSign, Package, Zap,
+};
+
+function getBlockDef(tipo: string) {
+  return BLOCK_TYPES.find((b) => b.tipo === tipo);
+}
+
+function getBlockIcon(tipo: string): LucideIcon {
+  return getBlockDef(tipo)?.icon ?? Settings;
+}
+
+// ── Default blocks when table is empty ─────────────────────────────────────
+
+function createDefaultBlocks(): Bloque[] {
+  const defaults = ["hero", "trust_badges", "categorias_destacadas", "productos_destacados", "banner_promo", "por_que_elegirnos"];
+  return defaults.map((tipo, i) => {
+    const def = getBlockDef(tipo)!;
+    return {
+      id: crypto.randomUUID(),
+      tipo,
+      titulo: def.defaultTitulo,
+      orden: i,
+      activo: true,
+      config: { ...def.defaultConfig },
+    };
+  });
+}
+
+// ── Collapsible Section ────────────────────────────────────────────────────
+
+function CollapsibleSection({ title, defaultOpen = true, children }: { title: string; defaultOpen?: boolean; children: React.ReactNode }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="border border-border rounded-lg overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center justify-between px-3 py-2.5 bg-muted/50 hover:bg-muted transition-colors text-sm font-medium"
+      >
+        {title}
+        <ChevronDownIcon className={`w-4 h-4 transition-transform ${open ? "" : "-rotate-90"}`} />
+      </button>
+      {open && <div className="p-3 space-y-3">{children}</div>}
+    </div>
+  );
+}
+
+// ── Inline Editable Text ──────────────────────────────────────────────────
+
+function EditableText({
+  value,
+  onChange,
+  tag: Tag = "span",
+  className,
+  placeholder,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  tag?: "h1" | "h2" | "h3" | "p" | "span";
+  className?: string;
+  placeholder?: string;
+}) {
+  const ref = useRef<HTMLElement>(null);
+  const [editing, setEditing] = useState(false);
+
+  const handleBlur = () => {
+    setEditing(false);
+    const text = ref.current?.innerText ?? "";
+    if (text !== value) onChange(text);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      ref.current?.blur();
+    }
+    if (e.key === "Escape") {
+      if (ref.current) ref.current.innerText = value;
+      ref.current?.blur();
+    }
+  };
+
+  return (
+    <Tag
+      ref={ref as any}
+      className={`${className ?? ""} ${editing ? "outline outline-2 outline-white/60 outline-offset-2 rounded" : ""} cursor-text`}
+      contentEditable
+      suppressContentEditableWarning
+      onFocus={() => setEditing(true)}
+      onBlur={handleBlur}
+      onKeyDown={handleKeyDown}
+      onClick={(e: React.MouseEvent) => e.stopPropagation()}
+      dangerouslySetInnerHTML={{ __html: value || placeholder || "" }}
+    />
+  );
+}
+
+// ── Block Preview Renderers ────────────────────────────────────────────────
+
+function PreviewHero({ config, onConfigChange }: { config: Record<string, unknown>; onConfigChange?: (key: string, value: unknown) => void }) {
+  const colorStart = (config.color_inicio as string) || "#be185d";
+  const colorEnd = (config.color_fin as string) || "#ec4899";
+  return (
+    <section
+      className="relative overflow-hidden min-h-[420px] flex items-center"
+      style={{ background: `linear-gradient(to right, ${colorStart}, ${colorEnd})` }}
+    >
+      {/* decorative circles - matching tienda exactly */}
+      <div className="absolute top-10 right-10 w-64 h-64 bg-white/10 rounded-full hidden md:block" />
+      <div className="absolute top-40 right-56 w-40 h-40 bg-white/10 rounded-full hidden md:block" />
+      <div className="absolute -bottom-10 right-20 w-32 h-32 bg-white/10 rounded-full hidden md:block" />
+      <div className="absolute top-20 right-96 w-20 h-20 bg-white/10 rounded-full hidden md:block" />
+      <div className="absolute bottom-16 right-72 w-12 h-12 bg-white/10 rounded-full hidden md:block" />
+
+      <div className="relative z-10 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16 w-full">
+        <div className="max-w-2xl">
+          <span className="inline-block text-sm font-semibold text-white/80 tracking-widest uppercase mb-4">
+            {(config.marca as string) || "DulceSur"}
+          </span>
+          {onConfigChange ? (
+            <EditableText
+              tag="h1"
+              className="text-4xl md:text-5xl font-bold text-white leading-tight mb-5"
+              value={(config.titulo as string) || "Título del Hero"}
+              onChange={(v) => onConfigChange("titulo", v)}
+              placeholder="Título del Hero"
+            />
+          ) : (
+            <h1 className="text-4xl md:text-5xl font-bold text-white leading-tight mb-5">
+              {(config.titulo as string) || "Título del Hero"}
+            </h1>
+          )}
+          {onConfigChange ? (
+            <EditableText
+              tag="p"
+              className="text-lg text-white/90 mb-8 max-w-lg"
+              value={(config.subtitulo as string) || "Subtítulo del banner"}
+              onChange={(v) => onConfigChange("subtitulo", v)}
+              placeholder="Subtítulo del banner"
+            />
+          ) : (
+            <p className="text-lg text-white/90 mb-8 max-w-lg">
+              {(config.subtitulo as string) || "Subtítulo del banner"}
+            </p>
+          )}
+          <div className="flex flex-wrap gap-4">
+            {(config.boton_texto as string) && (
+              onConfigChange ? (
+                <EditableText
+                  tag="span"
+                  className="bg-white text-pink-600 rounded-full px-8 py-3.5 font-semibold shadow-lg"
+                  value={config.boton_texto as string}
+                  onChange={(v) => onConfigChange("boton_texto", v)}
+                />
+              ) : (
+                <span className="bg-white text-pink-600 rounded-full px-8 py-3.5 font-semibold shadow-lg">
+                  {config.boton_texto as string}
+                </span>
+              )
+            )}
+            {(config.boton_secundario_texto as string) && (
+              onConfigChange ? (
+                <EditableText
+                  tag="span"
+                  className="border-2 border-white text-white rounded-full px-8 py-3 font-semibold"
+                  value={config.boton_secundario_texto as string}
+                  onChange={(v) => onConfigChange("boton_secundario_texto", v)}
+                />
+              ) : (
+                <span className="border-2 border-white text-white rounded-full px-8 py-3 font-semibold">
+                  {config.boton_secundario_texto as string}
+                </span>
+              )
+            )}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function PreviewTrustBadges({ config, onConfigChange }: { config: Record<string, unknown>; onConfigChange?: (key: string, value: unknown) => void }) {
+  const items = (config.items as Array<{ icono: string; titulo: string; subtitulo: string }>) ?? [];
+  const updateItem = (index: number, field: string, value: string) => {
+    if (!onConfigChange) return;
+    const updated = [...items];
+    updated[index] = { ...updated[index], [field]: value };
+    onConfigChange("items", updated);
+  };
+  return (
+    <section className="bg-white border-y border-gray-100 py-4">
+      <div className="max-w-7xl mx-auto px-4">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          {items.map((item, i) => {
+            const Icon = ICON_MAP[item.icono] ?? Shield;
+            return (
+              <div key={i} className="flex items-center gap-3 py-2">
+                <div className="w-12 h-12 rounded-full bg-pink-50 text-pink-600 flex items-center justify-center shrink-0">
+                  <Icon className="w-5 h-5" />
+                </div>
+                <div>
+                  {onConfigChange ? (
+                    <>
+                      <EditableText tag="p" className="text-sm font-semibold text-gray-800" value={item.titulo} onChange={(v) => updateItem(i, "titulo", v)} />
+                      <EditableText tag="p" className="text-xs text-gray-500" value={item.subtitulo} onChange={(v) => updateItem(i, "subtitulo", v)} />
+                    </>
+                  ) : (
+                    <>
+                      <p className="text-sm font-semibold text-gray-800">{item.titulo}</p>
+                      <p className="text-xs text-gray-500">{item.subtitulo}</p>
+                    </>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function PreviewCategoriasDestacadas({ config, onConfigChange }: { config: Record<string, unknown>; onConfigChange?: (key: string, value: unknown) => void }) {
+  const titulo = (config.titulo_seccion as string) || "Categorías";
+  const max = (config.max_items as number) || 6;
+  const placeholders = ["Golosinas", "Snacks", "Bebidas", "Galletitas", "Chocolates", "Caramelos", "Cereales", "Dulces"];
+  return (
+    <section className="py-16">
+      <div className="max-w-7xl mx-auto px-4">
+        <div className="text-center mb-10">
+          {onConfigChange ? (
+            <EditableText tag="h2" className="text-2xl md:text-3xl font-bold text-gray-900" value={titulo} onChange={(v) => onConfigChange("titulo_seccion", v)} />
+          ) : (
+            <h2 className="text-2xl md:text-3xl font-bold text-gray-900">{titulo}</h2>
+          )}
+          <div className="w-16 h-1 bg-pink-600 rounded-full mx-auto mt-2" />
+        </div>
+        <div className="grid grid-cols-3 md:grid-cols-6 gap-4">
+          {Array.from({ length: Math.min(max, 6) }).map((_, i) => (
+            <div
+              key={i}
+              className="group cursor-pointer rounded-2xl border border-gray-100 bg-white p-6 text-center hover:shadow-lg hover:border-pink-200 transition-all duration-300"
+            >
+              <p className="font-semibold text-gray-800">{placeholders[i] ?? `Cat. ${i + 1}`}</p>
+              <p className="text-xs text-pink-600 mt-2 opacity-0 group-hover:opacity-100 transition-opacity duration-300">Ver productos &rarr;</p>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function PreviewProductosDestacados({ config, onConfigChange }: { config: Record<string, unknown>; onConfigChange?: (key: string, value: unknown) => void }) {
+  const titulo = (config.titulo_seccion as string) || "Productos Destacados";
+  const max = (config.max_items as number) || 8;
+  return (
+    <section className="py-16 bg-gray-50/50">
+      <div className="max-w-7xl mx-auto px-4">
+        <div className="text-center mb-10">
+          {onConfigChange ? (
+            <EditableText tag="h2" className="text-2xl md:text-3xl font-bold text-gray-900" value={titulo} onChange={(v) => onConfigChange("titulo_seccion", v)} />
+          ) : (
+            <h2 className="text-2xl md:text-3xl font-bold text-gray-900">{titulo}</h2>
+          )}
+          <div className="w-16 h-1 bg-pink-600 rounded-full mx-auto mt-2" />
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-5">
+          {Array.from({ length: Math.min(max, 8) }).map((_, i) => (
+            <div
+              key={i}
+              className="group relative overflow-hidden rounded-2xl border border-gray-100 bg-white transition-all duration-300 hover:shadow-xl hover:border-gray-200"
+            >
+              <div className="relative aspect-[4/3] bg-gray-50 overflow-hidden flex items-center justify-center">
+                <Package className="w-12 h-12 text-gray-300" />
+                <div className="absolute inset-0 bg-gradient-to-t from-black/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+              </div>
+              <div className="p-4">
+                <span className="inline-block text-[11px] font-medium text-pink-600 bg-pink-50 rounded-full px-2.5 py-0.5">
+                  Categoría
+                </span>
+                <p className="text-sm font-medium text-gray-800 line-clamp-2 mt-1.5 min-h-[2.5rem]">
+                  Producto de ejemplo {i + 1}
+                </p>
+                <p className="text-xl font-bold text-gray-900 mt-2">$1.500</p>
+              </div>
+              <div className="px-4 pb-4">
+                <button className="w-full mt-3 bg-pink-600 hover:bg-pink-700 text-white py-2.5 rounded-xl text-sm font-semibold flex items-center justify-center gap-2 transition-all hover:shadow-md">
+                  <ShoppingCart className="w-4 h-4" />
+                  Agregar al carrito
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="text-center mt-10">
+          <span className="inline-block border-2 border-pink-600 text-pink-600 hover:bg-pink-600 hover:text-white rounded-full px-8 py-3 font-semibold transition-all cursor-pointer">
+            Ver todos los productos
+          </span>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function PreviewBannerPromo({ config, onConfigChange }: { config: Record<string, unknown>; onConfigChange?: (key: string, value: unknown) => void }) {
+  const color = (config.color_fondo as string) || "#4f46e5";
+  return (
+    <section className="py-12">
+      <div className="max-w-7xl mx-auto px-4">
+        <div
+          className="text-white p-8 md:p-12 rounded-2xl flex flex-col md:flex-row items-center justify-between gap-6"
+          style={{ background: `linear-gradient(to right, ${color}, ${color}dd)` }}
+        >
+          <div className="flex items-center gap-5">
+            <div className="w-16 h-16 rounded-full bg-white/20 flex items-center justify-center shrink-0">
+              <Truck className="w-8 h-8" />
+            </div>
+            <div>
+              {onConfigChange ? (
+                <>
+                  <EditableText tag="p" className="text-2xl md:text-3xl font-bold" value={(config.titulo as string) || "Promoción"} onChange={(v) => onConfigChange("titulo", v)} />
+                  <EditableText tag="p" className="text-white/90 mt-1" value={(config.subtitulo as string) || "Descripción de la promo"} onChange={(v) => onConfigChange("subtitulo", v)} />
+                </>
+              ) : (
+                <>
+                  <p className="text-2xl md:text-3xl font-bold">{(config.titulo as string) || "Promoción"}</p>
+                  <p className="text-white/90 mt-1">{(config.subtitulo as string) || "Descripción de la promo"}</p>
+                </>
+              )}
+            </div>
+          </div>
+          {(config.boton_texto as string) && (
+            onConfigChange ? (
+              <span style={{ color }}>
+                <EditableText
+                  tag="span"
+                  className="bg-white rounded-full px-8 py-3.5 font-semibold shadow-lg hover:shadow-xl transition-shadow shrink-0"
+                  value={config.boton_texto as string}
+                  onChange={(v) => onConfigChange("boton_texto", v)}
+                />
+              </span>
+            ) : (
+              <span className="bg-white rounded-full px-8 py-3.5 font-semibold shadow-lg shrink-0" style={{ color }}>
+                {config.boton_texto as string}
+              </span>
+            )
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function PreviewPorQueElegirnos({ config, onConfigChange }: { config: Record<string, unknown>; onConfigChange?: (key: string, value: unknown) => void }) {
+  const titulo = (config.titulo_seccion as string) || "¿Por qué elegirnos?";
+  const cards = (config.cards as Array<{ icono: string; titulo: string; descripcion: string }>) ?? [];
+  const updateCard = (index: number, field: string, value: string) => {
+    if (!onConfigChange) return;
+    const updated = [...cards];
+    updated[index] = { ...updated[index], [field]: value };
+    onConfigChange("cards", updated);
+  };
+  return (
+    <section className="bg-gray-50 py-16">
+      <div className="max-w-7xl mx-auto px-4">
+        <div className="text-center mb-10">
+          {onConfigChange ? (
+            <EditableText tag="h2" className="text-2xl md:text-3xl font-bold text-gray-900" value={titulo} onChange={(v) => onConfigChange("titulo_seccion", v)} />
+          ) : (
+            <h2 className="text-2xl md:text-3xl font-bold text-gray-900">{titulo}</h2>
+          )}
+          <div className="w-16 h-1 bg-pink-600 rounded-full mx-auto mt-2" />
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          {cards.map((card, i) => {
+            const Icon = ICON_MAP[card.icono] ?? Star;
+            return (
+              <div key={i} className="bg-white rounded-2xl p-8 text-center shadow-sm hover:shadow-md transition-shadow">
+                <div className="w-14 h-14 rounded-full bg-pink-50 text-pink-600 flex items-center justify-center mx-auto mb-5">
+                  <Icon className="w-6 h-6" />
+                </div>
+                {onConfigChange ? (
+                  <>
+                    <EditableText tag="h3" className="text-lg font-bold text-gray-900 mb-2" value={card.titulo} onChange={(v) => updateCard(i, "titulo", v)} />
+                    <EditableText tag="p" className="text-sm text-gray-500 leading-relaxed" value={card.descripcion} onChange={(v) => updateCard(i, "descripcion", v)} />
+                  </>
+                ) : (
+                  <>
+                    <h3 className="text-lg font-bold text-gray-900 mb-2">{card.titulo}</h3>
+                    <p className="text-sm text-gray-500 leading-relaxed">{card.descripcion}</p>
+                  </>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function PreviewTextoLibre({ config }: { config: Record<string, unknown> }) {
+  const contenido = (config.contenido as string) || "";
+  if (!contenido) {
+    return (
+      <section className="py-12">
+        <div className="max-w-7xl mx-auto px-4 text-center text-gray-400 text-sm italic">
+          Bloque de texto vacío - editá el contenido en el panel lateral
+        </div>
+      </section>
+    );
+  }
+  return (
+    <section className="py-12">
+      <div className="max-w-7xl mx-auto px-4 prose prose-sm max-w-none" dangerouslySetInnerHTML={{ __html: contenido }} />
+    </section>
+  );
+}
+
+function PreviewImagenBanner({ config }: { config: Record<string, unknown> }) {
+  const url = (config.url_imagen as string) || "";
+  const alt = (config.alt as string) || "Banner";
+  const alto = (config.alto as string) || "mediano";
+  const heightMap: Record<string, string> = { pequeno: "200px", mediano: "300px", grande: "400px" };
+  const h = heightMap[alto] || "300px";
+
+  if (!url) {
+    return (
+      <section className="py-4">
+        <div className="max-w-7xl mx-auto px-4">
+          <div className="rounded-2xl bg-gray-100 border-2 border-dashed border-gray-300 flex items-center justify-center" style={{ height: h }}>
+            <div className="text-center text-gray-400">
+              <Image className="w-10 h-10 mx-auto mb-2" />
+              <p className="text-sm">Sin imagen configurada</p>
+            </div>
+          </div>
+        </div>
+      </section>
+    );
+  }
+  return (
+    <section className="py-4">
+      <div className="max-w-7xl mx-auto px-4">
+        <img src={url} alt={alt} className="w-full rounded-2xl object-cover" style={{ height: h }} />
+      </div>
+    </section>
+  );
+}
+
+// ── Block Preview Router ───────────────────────────────────────────────────
+
+function BlockPreview({ bloque, onConfigChange }: { bloque: Bloque; onConfigChange?: (key: string, value: unknown) => void }) {
+  switch (bloque.tipo) {
+    case "hero":
+      return <PreviewHero config={bloque.config} onConfigChange={onConfigChange} />;
+    case "trust_badges":
+      return <PreviewTrustBadges config={bloque.config} onConfigChange={onConfigChange} />;
+    case "categorias_destacadas":
+      return <PreviewCategoriasDestacadas config={bloque.config} onConfigChange={onConfigChange} />;
+    case "productos_destacados":
+      return <PreviewProductosDestacados config={bloque.config} onConfigChange={onConfigChange} />;
+    case "banner_promo":
+      return <PreviewBannerPromo config={bloque.config} onConfigChange={onConfigChange} />;
+    case "por_que_elegirnos":
+      return <PreviewPorQueElegirnos config={bloque.config} onConfigChange={onConfigChange} />;
+    case "texto_libre":
+      return <PreviewTextoLibre config={bloque.config} />;
+    case "imagen_banner":
+      return <PreviewImagenBanner config={bloque.config} />;
+    default:
+      return (
+        <section className="py-8">
+          <div className="max-w-7xl mx-auto px-4 text-center text-gray-400 text-sm">
+            Bloque desconocido: {bloque.tipo}
+          </div>
+        </section>
+      );
+  }
+}
+
+// ── Insert Point Button ────────────────────────────────────────────────────
+
+function InsertPoint({ onClick }: { onClick: () => void }) {
+  return (
+    <div className="relative group h-4 flex items-center justify-center">
+      <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-[2px] bg-pink-300 opacity-0 group-hover:opacity-100 transition-opacity" />
+      <button
+        onClick={(e) => { e.stopPropagation(); onClick(); }}
+        className="relative z-10 w-6 h-6 rounded-full bg-pink-500 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all hover:scale-110 shadow-md"
+      >
+        <Plus className="w-3.5 h-3.5" />
+      </button>
+    </div>
+  );
+}
+
+// ── Main Component ─────────────────────────────────────────────────────────
+
+export default function PaginaInicioEditor() {
+  const [bloques, setBloques] = useState<Bloque[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [hoveredId, setHoveredId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [hasChanges, setHasChanges] = useState(false);
+  const [addDialogOpen, setAddDialogOpen] = useState(false);
+  const [addAtIndex, setAddAtIndex] = useState<number>(-1);
+  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const [device, setDevice] = useState<"desktop" | "tablet" | "mobile">("desktop");
+
+  const [originalIds, setOriginalIds] = useState<string[]>([]);
+  const [savedSnapshot, setSavedSnapshot] = useState<string>("");
+  const settingsPanelRef = useRef<HTMLDivElement>(null);
+
+  const selectedBlock = bloques.find((b) => b.id === selectedId) ?? null;
+
+  // Track unsaved changes
+  useEffect(() => {
+    const current = JSON.stringify(bloques);
+    setHasChanges(current !== savedSnapshot);
+  }, [bloques, savedSnapshot]);
+
+  // ── Load ────────────────────────────────────────────────────────────────
+
+  useEffect(() => {
+    (async () => {
+      const { data, error } = await supabase
+        .from("pagina_inicio_bloques")
+        .select("*")
+        .order("orden", { ascending: true });
+
+      if (error) {
+        console.error("Error loading blocks:", error);
+        setLoading(false);
+        return;
+      }
+
+      if (!data || data.length === 0) {
+        const defaults = createDefaultBlocks();
+        setBloques(defaults);
+        setOriginalIds([]);
+        setSavedSnapshot(JSON.stringify(defaults));
+      } else {
+        const loaded = data as Bloque[];
+        setBloques(loaded);
+        setOriginalIds(loaded.map((b) => b.id));
+        setSavedSnapshot(JSON.stringify(loaded));
+      }
+      setLoading(false);
+    })();
+  }, []);
+
+  // ── Save ────────────────────────────────────────────────────────────────
+
+  const handleSave = useCallback(async () => {
+    setSaving(true);
+    try {
+      const currentIds = bloques.map((b) => b.id);
+      const idsToDelete = originalIds.filter((id) => !currentIds.includes(id));
+      if (idsToDelete.length > 0) {
+        await supabase.from("pagina_inicio_bloques").delete().in("id", idsToDelete);
+      }
+
+      const rows = bloques.map((b, i) => ({
+        id: b.id,
+        tipo: b.tipo,
+        titulo: b.titulo,
+        orden: i,
+        activo: b.activo,
+        config: b.config,
+        updated_at: new Date().toISOString(),
+      }));
+
+      const { error } = await supabase.from("pagina_inicio_bloques").upsert(rows);
+      if (error) throw error;
+
+      setOriginalIds(currentIds);
+      setSavedSnapshot(JSON.stringify(bloques));
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (err) {
+      console.error("Error saving:", err);
+      alert("Error al guardar los cambios");
+    } finally {
+      setSaving(false);
+    }
+  }, [bloques, originalIds]);
+
+  // ── Block operations ────────────────────────────────────────────────────
+
+  const moveBlock = (id: string, dir: -1 | 1) => {
+    setBloques((prev) => {
+      const idx = prev.findIndex((b) => b.id === id);
+      if (idx < 0) return prev;
+      const newIdx = idx + dir;
+      if (newIdx < 0 || newIdx >= prev.length) return prev;
+      const next = [...prev];
+      [next[idx], next[newIdx]] = [next[newIdx], next[idx]];
+      return next;
+    });
+  };
+
+  const toggleActivo = (id: string) => {
+    setBloques((prev) =>
+      prev.map((b) => (b.id === id ? { ...b, activo: !b.activo } : b))
+    );
+  };
+
+  const deleteBlock = (id: string) => {
+    setBloques((prev) => prev.filter((b) => b.id !== id));
+    if (selectedId === id) setSelectedId(null);
+    setDeleteConfirm(null);
+  };
+
+  const addBlock = (tipo: string) => {
+    const def = getBlockDef(tipo)!;
+    const newBlock: Bloque = {
+      id: crypto.randomUUID(),
+      tipo,
+      titulo: def.defaultTitulo,
+      orden: bloques.length,
+      activo: true,
+      config: { ...def.defaultConfig },
+    };
+    if (addAtIndex >= 0 && addAtIndex <= bloques.length) {
+      setBloques((prev) => {
+        const next = [...prev];
+        next.splice(addAtIndex, 0, newBlock);
+        return next;
+      });
+    } else {
+      setBloques((prev) => [...prev, newBlock]);
+    }
+    setSelectedId(newBlock.id);
+    setAddDialogOpen(false);
+    setAddAtIndex(-1);
+  };
+
+  const updateConfig = (id: string, key: string, value: unknown) => {
+    setBloques((prev) =>
+      prev.map((b) =>
+        b.id === id ? { ...b, config: { ...b.config, [key]: value } } : b
+      )
+    );
+  };
+
+  const updateTitulo = (id: string, titulo: string) => {
+    setBloques((prev) =>
+      prev.map((b) => (b.id === id ? { ...b, titulo } : b))
+    );
+  };
+
+  // ── Render ──────────────────────────────────────────────────────────────
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-screen">
+        <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  const previewWidths = { desktop: "100%", tablet: "768px", mobile: "375px" };
+
+  return (
+    <div className="h-[calc(100vh-64px)] flex flex-col overflow-hidden">
+      {/* ── Top Toolbar ────────────────────────────────────────────────── */}
+      <div className="h-14 border-b bg-white px-4 flex items-center justify-between shrink-0">
+        <div className="flex items-center gap-3">
+          <Link href="/admin/configuracion" className="p-2 hover:bg-gray-100 rounded-lg transition-colors">
+            <ArrowLeft className="w-4 h-4" />
+          </Link>
+          <div>
+            <h1 className="text-sm font-semibold leading-tight">Editor de Página</h1>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-1 bg-gray-100 rounded-lg p-1">
+          <button
+            onClick={() => setDevice("desktop")}
+            className={`p-1.5 rounded-md transition-colors ${device === "desktop" ? "bg-white shadow-sm" : "hover:bg-gray-200"}`}
+            title="Escritorio"
+          >
+            <Monitor className="w-4 h-4" />
+          </button>
+          <button
+            onClick={() => setDevice("tablet")}
+            className={`p-1.5 rounded-md transition-colors ${device === "tablet" ? "bg-white shadow-sm" : "hover:bg-gray-200"}`}
+            title="Tablet"
+          >
+            <Tablet className="w-4 h-4" />
+          </button>
+          <button
+            onClick={() => setDevice("mobile")}
+            className={`p-1.5 rounded-md transition-colors ${device === "mobile" ? "bg-white shadow-sm" : "hover:bg-gray-200"}`}
+            title="Móvil"
+          >
+            <Smartphone className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => window.open("/tienda", "_blank")}
+          >
+            <ExternalLink className="w-3.5 h-3.5 mr-1.5" />
+            Abrir tienda
+          </Button>
+          <Button size="sm" onClick={handleSave} disabled={saving} className="relative">
+            {saving ? (
+              <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+            ) : saved ? (
+              <Check className="w-3.5 h-3.5 mr-1.5" />
+            ) : (
+              <Save className="w-3.5 h-3.5 mr-1.5" />
+            )}
+            {saved ? "Guardado" : "Guardar"}
+            {hasChanges && !saved && (
+              <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-pink-500 rounded-full" />
+            )}
+          </Button>
+        </div>
+      </div>
+
+      {/* ── Main Area ──────────────────────────────────────────────────── */}
+      <div className="flex flex-1 overflow-hidden">
+        {/* ── Left: Live Preview (inline rendering) ────────────────── */}
+        <div className="flex-1 bg-gray-200 overflow-hidden flex items-start justify-center p-4">
+          <div
+            className="bg-white shadow-xl rounded-lg overflow-y-auto transition-all duration-300 h-full"
+            style={{ maxWidth: previewWidths[device], width: "100%" }}
+          >
+            <div className="min-h-full bg-white">
+              {/* Insert point at the very top */}
+              <InsertPoint onClick={() => { setAddAtIndex(0); setAddDialogOpen(true); }} />
+
+              {bloques.map((bloque, idx) => {
+                const isSelected = selectedId === bloque.id;
+                const isHovered = hoveredId === bloque.id;
+                const BlockIcon = getBlockIcon(bloque.tipo);
+
+                return (
+                  <div key={bloque.id}>
+                    <div
+                      className={`relative cursor-pointer transition-all duration-200 ${
+                        !bloque.activo ? "opacity-40" : ""
+                      }`}
+                      style={{
+                        outline: isSelected
+                          ? "3px solid #ec4899"
+                          : isHovered
+                          ? "2px solid #f9a8d4"
+                          : "2px solid transparent",
+                        outlineOffset: isSelected ? "-3px" : "-2px",
+                      }}
+                      onClick={() => setSelectedId(bloque.id)}
+                      onDoubleClick={() => setSelectedId(bloque.id)}
+                      onMouseEnter={() => setHoveredId(bloque.id)}
+                      onMouseLeave={() => setHoveredId(null)}
+                    >
+                      {/* Oculto badge */}
+                      {!bloque.activo && (
+                        <div className="absolute top-2 left-2 z-20 bg-gray-800 text-white text-[10px] font-semibold px-2 py-0.5 rounded-full flex items-center gap-1">
+                          <EyeOff className="w-3 h-3" />
+                          Oculto
+                        </div>
+                      )}
+
+                      {/* Floating toolbar on hover */}
+                      {(isHovered || isSelected) && (
+                        <div className="absolute top-2 right-2 z-20 flex items-center gap-1 bg-white rounded-lg shadow-lg border border-gray-200 p-1">
+                          <span className="px-2 py-0.5 text-[10px] font-semibold text-gray-500 border-r border-gray-200 mr-1">
+                            {getBlockDef(bloque.tipo)?.label}
+                          </span>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setSelectedId(bloque.id); }}
+                            className="p-1 hover:bg-pink-50 rounded transition-colors"
+                            title="Editar"
+                          >
+                            <Pencil className="w-3.5 h-3.5 text-gray-600" />
+                          </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); moveBlock(bloque.id, -1); }}
+                            className="p-1 hover:bg-gray-100 rounded transition-colors disabled:opacity-30"
+                            disabled={idx === 0}
+                            title="Mover arriba"
+                          >
+                            <ChevronUp className="w-3.5 h-3.5 text-gray-600" />
+                          </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); moveBlock(bloque.id, 1); }}
+                            className="p-1 hover:bg-gray-100 rounded transition-colors disabled:opacity-30"
+                            disabled={idx === bloques.length - 1}
+                            title="Mover abajo"
+                          >
+                            <ChevronDown className="w-3.5 h-3.5 text-gray-600" />
+                          </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); toggleActivo(bloque.id); }}
+                            className="p-1 hover:bg-gray-100 rounded transition-colors"
+                            title={bloque.activo ? "Ocultar" : "Mostrar"}
+                          >
+                            {bloque.activo ? (
+                              <Eye className="w-3.5 h-3.5 text-gray-600" />
+                            ) : (
+                              <EyeOff className="w-3.5 h-3.5 text-gray-600" />
+                            )}
+                          </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setDeleteConfirm(bloque.id); }}
+                            className="p-1 hover:bg-red-50 rounded transition-colors"
+                            title="Eliminar"
+                          >
+                            <Trash2 className="w-3.5 h-3.5 text-red-500" />
+                          </button>
+                        </div>
+                      )}
+
+                      {/* Selected indicator bar */}
+                      {isSelected && (
+                        <div className="absolute left-0 top-0 bottom-0 w-1 bg-pink-500 z-20 rounded-r" />
+                      )}
+
+                      {/* The actual block preview - inline editable */}
+                      <div>
+                        <BlockPreview bloque={bloque} onConfigChange={(key, val) => updateConfig(bloque.id, key, val)} />
+                      </div>
+                    </div>
+
+                    {/* Insert point between blocks */}
+                    <InsertPoint onClick={() => { setAddAtIndex(idx + 1); setAddDialogOpen(true); }} />
+                  </div>
+                );
+              })}
+
+              {bloques.length === 0 && (
+                <div className="py-24 text-center text-gray-400">
+                  <MousePointer className="w-10 h-10 mx-auto mb-3 opacity-30" />
+                  <p className="text-sm">No hay bloques. Agregá uno para empezar.</p>
+                  <button
+                    onClick={() => { setAddAtIndex(-1); setAddDialogOpen(true); }}
+                    className="mt-4 px-4 py-2 bg-pink-500 text-white rounded-lg text-sm font-medium hover:bg-pink-600 transition-colors"
+                  >
+                    <Plus className="w-4 h-4 inline mr-1" />
+                    Agregar bloque
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* ── Right: Settings Panel ──────────────────────────────────── */}
+        <div ref={settingsPanelRef} className="w-[380px] bg-white border-l overflow-y-auto shrink-0">
+          {selectedBlock ? (
+            <div>
+              {/* Panel header */}
+              <div className="sticky top-0 bg-white z-10 px-4 py-3 border-b flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  {(() => { const Icon = getBlockIcon(selectedBlock.tipo); return <Icon className="w-4 h-4 text-pink-600" />; })()}
+                  <span className="text-sm font-semibold">Editar {getBlockDef(selectedBlock.tipo)?.label ?? selectedBlock.tipo}</span>
+                </div>
+                <button
+                  onClick={() => setSelectedId(null)}
+                  className="p-1.5 hover:bg-gray-100 rounded-md transition-colors"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Tabs (only Contenido active for now) */}
+              <div className="flex border-b">
+                <button className="flex-1 py-2.5 text-sm font-medium text-pink-600 border-b-2 border-pink-600">
+                  Contenido
+                </button>
+                <button className="flex-1 py-2.5 text-sm font-medium text-gray-400 cursor-not-allowed">
+                  Estilo
+                </button>
+              </div>
+
+              {/* Config form */}
+              <div className="p-4 space-y-4">
+                <div className="space-y-1.5">
+                  <Label>Nombre del bloque</Label>
+                  <Input
+                    value={selectedBlock.titulo}
+                    onChange={(e) => updateTitulo(selectedBlock.id, e.target.value)}
+                  />
+                </div>
+                <Separator />
+                <BlockConfigForm
+                  bloque={selectedBlock}
+                  onConfigChange={(key, val) => updateConfig(selectedBlock.id, key, val)}
+                />
+              </div>
+            </div>
+          ) : (
+            <div>
+              <div className="px-4 py-3 border-b">
+                <span className="text-sm font-semibold">Bloques de la página</span>
+              </div>
+              <div className="p-2">
+                {bloques.length === 0 && (
+                  <div className="py-12 text-center text-sm text-gray-400">
+                    <MousePointer className="w-8 h-8 mx-auto mb-2 opacity-30" />
+                    No hay bloques. Agregá uno para empezar.
+                  </div>
+                )}
+                {bloques.map((bloque, idx: number) => {
+                  const Icon = getBlockIcon(bloque.tipo);
+                  const isSelected = selectedId === bloque.id;
+                  return (
+                    <div
+                      key={bloque.id}
+                      className={`flex items-center gap-2 p-2 rounded-lg cursor-pointer transition-colors group ${
+                        isSelected ? "bg-pink-50 border border-pink-200" : "hover:bg-gray-50"
+                      }`}
+                      onClick={() => setSelectedId(bloque.id)}
+                    >
+                      <GripVertical className="w-3.5 h-3.5 text-gray-300 shrink-0" />
+                      <div className={`w-7 h-7 rounded-md flex items-center justify-center shrink-0 ${isSelected ? "bg-pink-100" : "bg-indigo-50"}`}>
+                        <Icon className={`w-3.5 h-3.5 ${isSelected ? "text-pink-600" : "text-indigo-600"}`} />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs font-medium truncate">{bloque.titulo}</p>
+                        <p className="text-[10px] text-gray-400">{getBlockDef(bloque.tipo)?.label}</p>
+                      </div>
+                      <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button
+                          onClick={(e) => { e.stopPropagation(); moveBlock(bloque.id, -1); }}
+                          className="p-1 hover:bg-gray-200 rounded disabled:opacity-30"
+                          disabled={idx === 0}
+                        >
+                          <ChevronUp className="w-3 h-3" />
+                        </button>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); moveBlock(bloque.id, 1); }}
+                          className="p-1 hover:bg-gray-200 rounded disabled:opacity-30"
+                          disabled={idx === bloques.length - 1}
+                        >
+                          <ChevronDown className="w-3 h-3" />
+                        </button>
+                      </div>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleActivo(bloque.id);
+                        }}
+                        className="shrink-0"
+                      >
+                        <span
+                          className={`w-7 h-3.5 rounded-full relative inline-flex items-center transition-colors ${
+                            bloque.activo ? "bg-pink-500" : "bg-gray-300"
+                          }`}
+                        >
+                          <span
+                            className={`w-2.5 h-2.5 rounded-full bg-white absolute transition-transform ${
+                              bloque.activo ? "translate-x-3.5" : "translate-x-0.5"
+                            }`}
+                          />
+                        </span>
+                      </button>
+                    </div>
+                  );
+                })}
+                <button
+                  onClick={() => { setAddAtIndex(-1); setAddDialogOpen(true); }}
+                  className="w-full mt-2 p-2 rounded-lg border-2 border-dashed border-gray-300 hover:border-pink-400 hover:bg-pink-50/50 transition-colors text-gray-400 hover:text-pink-500 flex items-center justify-center gap-2 text-xs font-medium"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  Agregar bloque
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ── Add Block Dialog ─────────────────────────────────────────── */}
+      <Dialog open={addDialogOpen} onOpenChange={setAddDialogOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Agregar bloque</DialogTitle>
+          </DialogHeader>
+          <div className="grid grid-cols-2 gap-3 mt-2">
+            {BLOCK_TYPES.map((bt) => {
+              const Icon = bt.icon;
+              return (
+                <button
+                  key={bt.tipo}
+                  onClick={() => addBlock(bt.tipo)}
+                  className="flex flex-col items-center gap-2 p-4 rounded-lg border border-border hover:border-pink-300 hover:bg-pink-50 transition-colors text-center"
+                >
+                  <div className="w-10 h-10 rounded-lg bg-pink-50 flex items-center justify-center">
+                    <Icon className="w-5 h-5 text-pink-600" />
+                  </div>
+                  <span className="text-sm font-medium">{bt.label}</span>
+                  <span className="text-[10px] text-gray-400 leading-tight">{bt.description}</span>
+                </button>
+              );
+            })}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Delete Confirmation Dialog ────────────────────────────────── */}
+      <Dialog
+        open={deleteConfirm !== null}
+        onOpenChange={(open) => { if (!open) setDeleteConfirm(null); }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Eliminar bloque</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            ¿Estás seguro de que querés eliminar este bloque? Esta acción no se puede deshacer.
+          </p>
+          <div className="flex justify-end gap-2 mt-4">
+            <Button variant="outline" onClick={() => setDeleteConfirm(null)}>
+              Cancelar
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => deleteConfirm && deleteBlock(deleteConfirm)}
+            >
+              Eliminar
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+// ── Block config forms ─────────────────────────────────────────────────────
+
+function BlockConfigForm({
+  bloque,
+  onConfigChange,
+}: {
+  bloque: Bloque;
+  onConfigChange: (key: string, value: unknown) => void;
+}) {
+  const c = bloque.config;
+
+  switch (bloque.tipo) {
+    case "hero":
+      return (
+        <div className="space-y-3">
+          <CollapsibleSection title="Textos">
+            <Field label="Título" value={c.titulo as string} onChange={(v) => onConfigChange("titulo", v)} />
+            <div className="space-y-1.5">
+              <Label>Subtítulo</Label>
+              <textarea
+                className="flex w-full rounded-lg border border-input bg-transparent px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring min-h-[60px] resize-y"
+                rows={3}
+                value={(c.subtitulo as string) ?? ""}
+                onChange={(e) => onConfigChange("subtitulo", e.target.value)}
+              />
+            </div>
+          </CollapsibleSection>
+          <CollapsibleSection title="Botones">
+            <Field label="Texto del botón principal" value={c.boton_texto as string} onChange={(v) => onConfigChange("boton_texto", v)} />
+            <Field label="Link del botón" value={c.boton_link as string} onChange={(v) => onConfigChange("boton_link", v)} />
+            <Field label="Texto del botón secundario" value={c.boton_secundario_texto as string} onChange={(v) => onConfigChange("boton_secundario_texto", v)} />
+            <Field label="Link secundario" value={c.boton_secundario_link as string} onChange={(v) => onConfigChange("boton_secundario_link", v)} />
+          </CollapsibleSection>
+          <CollapsibleSection title="Estilo">
+            <ColorField label="Color inicio gradiente" value={c.color_inicio as string} onChange={(v) => onConfigChange("color_inicio", v)} />
+            <ColorField label="Color fin gradiente" value={c.color_fin as string} onChange={(v) => onConfigChange("color_fin", v)} />
+          </CollapsibleSection>
+        </div>
+      );
+
+    case "trust_badges":
+      return (
+        <div className="space-y-3">
+          {((c.items as Array<{ icono: string; titulo: string; subtitulo: string }>) ?? []).map(
+            (item, i) => (
+              <CollapsibleSection key={i} title={`Badge ${i + 1}`} defaultOpen={i === 0}>
+                <IconSelect
+                  value={item.icono}
+                  onChange={(v) => {
+                    const items = [...(c.items as Array<{ icono: string; titulo: string; subtitulo: string }>)];
+                    items[i] = { ...items[i], icono: v };
+                    onConfigChange("items", items);
+                  }}
+                />
+                <Field
+                  label="Título"
+                  value={item.titulo}
+                  onChange={(v) => {
+                    const items = [...(c.items as Array<{ icono: string; titulo: string; subtitulo: string }>)];
+                    items[i] = { ...items[i], titulo: v };
+                    onConfigChange("items", items);
+                  }}
+                />
+                <Field
+                  label="Subtítulo"
+                  value={item.subtitulo}
+                  onChange={(v) => {
+                    const items = [...(c.items as Array<{ icono: string; titulo: string; subtitulo: string }>)];
+                    items[i] = { ...items[i], subtitulo: v };
+                    onConfigChange("items", items);
+                  }}
+                />
+              </CollapsibleSection>
+            )
+          )}
+        </div>
+      );
+
+    case "categorias_destacadas":
+      return (
+        <div className="space-y-3">
+          <Field label="Título de sección" value={c.titulo_seccion as string} onChange={(v) => onConfigChange("titulo_seccion", v)} />
+          <div className="space-y-1.5">
+            <Label>Cantidad máxima</Label>
+            <Input
+              type="number"
+              min={1}
+              max={20}
+              value={(c.max_items as number) ?? 6}
+              onChange={(e) => onConfigChange("max_items", parseInt(e.target.value) || 6)}
+            />
+          </div>
+        </div>
+      );
+
+    case "productos_destacados":
+      return (
+        <div className="space-y-3">
+          <Field label="Título de sección" value={c.titulo_seccion as string} onChange={(v) => onConfigChange("titulo_seccion", v)} />
+          <div className="space-y-1.5">
+            <Label>Cantidad máxima</Label>
+            <Select
+              value={String((c.max_items as number) ?? 8)}
+              onValueChange={(v) => onConfigChange("max_items", parseInt((v ?? "8"), 10))}
+            >
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="4">4</SelectItem>
+                <SelectItem value="8">8</SelectItem>
+                <SelectItem value="12">12</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1.5">
+            <Label>Orden</Label>
+            <Select
+              value={(c.orden as string) ?? "recientes"}
+              onValueChange={(v) => onConfigChange("orden", v ?? "recientes")}
+            >
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="recientes">Más recientes</SelectItem>
+                <SelectItem value="precio_asc">Precio: menor a mayor</SelectItem>
+                <SelectItem value="precio_desc">Precio: mayor a menor</SelectItem>
+                <SelectItem value="nombre">Nombre A-Z</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+      );
+
+    case "banner_promo":
+      return (
+        <div className="space-y-3">
+          <Field label="Título" value={c.titulo as string} onChange={(v) => onConfigChange("titulo", v)} />
+          <Field label="Subtítulo" value={c.subtitulo as string} onChange={(v) => onConfigChange("subtitulo", v)} />
+          <Field label="Texto del botón" value={c.boton_texto as string} onChange={(v) => onConfigChange("boton_texto", v)} />
+          <Field label="Link" value={c.link as string} onChange={(v) => onConfigChange("link", v)} />
+          <ColorField label="Color de fondo" value={c.color_fondo as string} onChange={(v) => onConfigChange("color_fondo", v)} />
+        </div>
+      );
+
+    case "por_que_elegirnos":
+      return (
+        <div className="space-y-3">
+          <Field label="Título de sección" value={c.titulo_seccion as string} onChange={(v) => onConfigChange("titulo_seccion", v)} />
+          {((c.cards as Array<{ icono: string; titulo: string; descripcion: string }>) ?? []).map(
+            (card, i) => (
+              <CollapsibleSection key={i} title={`Tarjeta ${i + 1}`} defaultOpen={i === 0}>
+                <IconSelect
+                  value={card.icono}
+                  onChange={(v) => {
+                    const cards = [...(c.cards as Array<{ icono: string; titulo: string; descripcion: string }>)];
+                    cards[i] = { ...cards[i], icono: v };
+                    onConfigChange("cards", cards);
+                  }}
+                />
+                <Field
+                  label="Título"
+                  value={card.titulo}
+                  onChange={(v) => {
+                    const cards = [...(c.cards as Array<{ icono: string; titulo: string; descripcion: string }>)];
+                    cards[i] = { ...cards[i], titulo: v };
+                    onConfigChange("cards", cards);
+                  }}
+                />
+                <div className="space-y-1.5">
+                  <Label>Descripción</Label>
+                  <textarea
+                    className="flex w-full rounded-lg border border-input bg-transparent px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring min-h-[60px] resize-y"
+                    value={card.descripcion}
+                    onChange={(e) => {
+                      const cards = [...(c.cards as Array<{ icono: string; titulo: string; descripcion: string }>)];
+                      cards[i] = { ...cards[i], descripcion: e.target.value };
+                      onConfigChange("cards", cards);
+                    }}
+                  />
+                </div>
+              </CollapsibleSection>
+            )
+          )}
+        </div>
+      );
+
+    case "texto_libre":
+      return (
+        <div className="space-y-1.5">
+          <Label>Contenido</Label>
+          <textarea
+            className="flex w-full rounded-lg border border-input bg-transparent px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring min-h-[240px] resize-y font-mono"
+            rows={10}
+            value={(c.contenido as string) ?? ""}
+            onChange={(e) => onConfigChange("contenido", e.target.value)}
+            placeholder="HTML o Markdown..."
+          />
+        </div>
+      );
+
+    case "imagen_banner":
+      return (
+        <div className="space-y-3">
+          <div className="space-y-1.5">
+            <Label>URL de imagen</Label>
+            <Input
+              value={(c.url_imagen as string) ?? ""}
+              onChange={(e) => onConfigChange("url_imagen", e.target.value)}
+              placeholder="https://..."
+            />
+            {(c.url_imagen as string) && (
+              <div className="mt-2 rounded-lg overflow-hidden border border-gray-200">
+                <img src={c.url_imagen as string} alt="Preview" className="w-full h-24 object-cover" />
+              </div>
+            )}
+          </div>
+          <Field label="Link destino" value={c.link as string} onChange={(v) => onConfigChange("link", v)} />
+          <Field label="Texto alternativo" value={c.alt as string} onChange={(v) => onConfigChange("alt", v)} />
+          <div className="space-y-1.5">
+            <Label>Alto</Label>
+            <Select
+              value={(c.alto as string) ?? "mediano"}
+              onValueChange={(v) => onConfigChange("alto", v ?? "mediano")}
+            >
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="pequeno">Pequeño (200px)</SelectItem>
+                <SelectItem value="mediano">Mediano (300px)</SelectItem>
+                <SelectItem value="grande">Grande (400px)</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+      );
+
+    default:
+      return (
+        <p className="text-sm text-muted-foreground">
+          Sin configuración disponible para este tipo de bloque.
+        </p>
+      );
+  }
+}
+
+// ── Shared field components ────────────────────────────────────────────────
+
+function Field({
+  label,
+  value,
+  onChange,
+  placeholder,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <Label>{label}</Label>
+      <Input
+        value={value ?? ""}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+      />
+    </div>
+  );
+}
+
+function ColorField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <Label>{label}</Label>
+      <div className="flex items-center gap-2">
+        <input
+          type="color"
+          value={value ?? "#4f46e5"}
+          onChange={(e) => onChange(e.target.value)}
+          className="w-8 h-8 rounded border border-input cursor-pointer"
+        />
+        <Input
+          value={value ?? ""}
+          onChange={(e) => onChange(e.target.value)}
+          className="flex-1"
+          placeholder="#000000"
+        />
+      </div>
+    </div>
+  );
+}
+
+function IconSelect({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <Label>Icono</Label>
+      <Select value={value} onValueChange={(v) => onChange(v ?? value)}>
+        <SelectTrigger className="w-full">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {ICON_OPTIONS.map((icon) => (
+            <SelectItem key={icon} value={icon}>
+              {icon}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  );
+}

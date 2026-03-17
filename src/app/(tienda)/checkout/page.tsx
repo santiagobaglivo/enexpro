@@ -1,0 +1,1137 @@
+"use client";
+
+import { useEffect, useState, useCallback } from "react";
+import Link from "next/link";
+import { supabase } from "@/lib/supabase";
+import {
+  User,
+  Mail,
+  Phone,
+  Truck,
+  Store,
+  MapPin,
+  Calendar,
+  Banknote,
+  Building,
+  ArrowLeftRight,
+  Shield,
+  CheckCircle,
+  ShoppingBag,
+  ChevronRight,
+  Plus,
+  Loader2,
+} from "lucide-react";
+
+interface CartItem {
+  id: string;
+  nombre: string;
+  imagen: string;
+  presentacion: string;
+  precio: number;
+  cantidad: number;
+}
+
+interface Address {
+  id: string;
+  calle: string;
+  numero: string;
+  piso: string;
+  departamento: string;
+  localidad: string;
+  provincia: string;
+  codigo_postal: string;
+  referencia: string;
+  predeterminada?: boolean;
+}
+
+interface TiendaConfig {
+  dias_entrega: string[];
+  dias_max_programacion: number;
+  umbral_envio_gratis: number;
+  hora_corte: string;
+  monto_minimo_pedido: number;
+  monto_minimo_envio: number;
+  recargo_transferencia: number;
+}
+
+const formatCurrency = (value: number) =>
+  new Intl.NumberFormat("es-AR", {
+    style: "currency",
+    currency: "ARS",
+    minimumFractionDigits: 0,
+  }).format(value);
+
+const formatThousands = (n: number): string =>
+  n === 0 ? "" : n.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+
+const parseThousands = (s: string): number => {
+  const cleaned = s.replace(/\D/g, "");
+  return cleaned === "" ? 0 : parseInt(cleaned, 10);
+};
+
+const DAY_ABBR = ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"];
+const MONTH_ABBR = [
+  "Ene", "Feb", "Mar", "Abr", "May", "Jun",
+  "Jul", "Ago", "Sep", "Oct", "Nov", "Dic",
+];
+
+function getArgentinaNow(): Date {
+  return new Date(
+    new Date().toLocaleString("en-US", { timeZone: "America/Argentina/Buenos_Aires" })
+  );
+}
+
+function getAvailableDates(
+  diasEntrega: string[],
+  maxDias: number,
+  horaCorte: string
+): { dayAbbr: string; dayNum: number; monthAbbr: string; value: string }[] {
+  const dayMap: Record<string, number> = {
+    domingo: 0, lunes: 1, martes: 2, miercoles: 3,
+    miércoles: 3, jueves: 4, viernes: 5, sabado: 6, sábado: 6,
+  };
+  const allowedDays = diasEntrega.map((d) => dayMap[d.toLowerCase()] ?? -1);
+  const now = getArgentinaNow();
+
+  const [hh, mm] = (horaCorte || "12:00").split(":").map(Number);
+  const cutoffMinutes = hh * 60 + mm;
+  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+  const startOffset = nowMinutes < cutoffMinutes ? 0 : 1;
+
+  const dates: { dayAbbr: string; dayNum: number; monthAbbr: string; value: string }[] = [];
+  for (let i = startOffset; i <= maxDias && dates.length < 10; i++) {
+    const d = new Date(now);
+    d.setDate(now.getDate() + i);
+    if (allowedDays.includes(d.getDay())) {
+      dates.push({
+        dayAbbr: DAY_ABBR[d.getDay()],
+        dayNum: d.getDate(),
+        monthAbbr: MONTH_ABBR[d.getMonth()],
+        value: d.toISOString().split("T")[0],
+      });
+    }
+  }
+  return dates;
+}
+
+export default function CheckoutPage() {
+  const [items, setItems] = useState<CartItem[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [orderNumber, setOrderNumber] = useState<string | null>(null);
+
+  // Contact
+  const [nombre, setNombre] = useState("");
+  const [apellido, setApellido] = useState("");
+  const [email, setEmail] = useState("");
+  const [telefono, setTelefono] = useState("");
+  const [clienteId, setClienteId] = useState<string | null>(null);
+
+  // Delivery
+  const [metodoEntrega, setMetodoEntrega] = useState<"retiro" | "envio">("retiro");
+  const [savedAddresses, setSavedAddresses] = useState<Address[]>([]);
+  const [selectedAddressId, setSelectedAddressId] = useState<string | null>(null);
+  const [showNewAddress, setShowNewAddress] = useState(false);
+  const [addr, setAddr] = useState({
+    calle: "", numero: "", piso: "", departamento: "",
+    localidad: "", provincia: "", codigo_postal: "", referencia: "",
+  });
+  const [observacion, setObservacion] = useState("");
+
+  // Date
+  const [fechaEntrega, setFechaEntrega] = useState("");
+  const [availableDates, setAvailableDates] = useState<
+    { dayAbbr: string; dayNum: number; monthAbbr: string; value: string }[]
+  >([]);
+
+  // Payment
+  const [metodoPago, setMetodoPago] = useState<"efectivo" | "transferencia" | "mixto">("efectivo");
+  const [cuentasBancarias, setCuentasBancarias] = useState<{ id: string; nombre: string; tipo: string; cbu_cvu: string; alias: string; titular?: string }[]>([]);
+  const [selectedCuentaId, setSelectedCuentaId] = useState<string>("");
+  const [mixtoEfectivo, setMixtoEfectivo] = useState(0);
+  const [mixtoTransferencia, setMixtoTransferencia] = useState(0);
+
+  // Config
+  const [config, setConfig] = useState<TiendaConfig | null>(null);
+
+  // Validation errors
+  const [errors, setErrors] = useState<string[]>([]);
+
+  const loadConfig = useCallback(async () => {
+    const { data } = await supabase.from("tienda_config").select("*").single();
+    if (data) {
+      const cfg: TiendaConfig = {
+        dias_entrega: data.dias_entrega ?? [],
+        dias_max_programacion: data.dias_max_programacion ?? 14,
+        umbral_envio_gratis: data.umbral_envio_gratis ?? 0,
+        hora_corte: data.hora_corte ?? "12:00",
+        monto_minimo_pedido: data.monto_minimo_pedido ?? 0,
+        monto_minimo_envio: 50000,
+        recargo_transferencia: data.recargo_transferencia ?? 0,
+      };
+      setConfig(cfg);
+      const dates = getAvailableDates(cfg.dias_entrega, cfg.dias_max_programacion, cfg.hora_corte);
+      setAvailableDates(dates);
+      if (dates.length > 0) {
+        setFechaEntrega(dates[0].value);
+      } else {
+        // Default to tomorrow if no delivery days configured
+        const tomorrow = new Date(getArgentinaNow());
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        setFechaEntrega(tomorrow.toISOString().split("T")[0]);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    const raw = localStorage.getItem("carrito");
+    if (raw) {
+      try { setItems(JSON.parse(raw)); } catch {}
+    }
+
+    const auth = localStorage.getItem("cliente_auth");
+    if (auth) {
+      try {
+        const parsed = JSON.parse(auth);
+        if (parsed.id) {
+          setClienteId(parsed.id);
+          if (parsed.nombre) {
+            const parts = parsed.nombre.split(" ");
+            setNombre(parts[0] || "");
+            setApellido(parts.slice(1).join(" ") || "");
+          }
+          if (parsed.email) setEmail(parsed.email);
+          if (parsed.telefono) setTelefono(parsed.telefono);
+
+          supabase
+            .from("cliente_direcciones")
+            .select("*")
+            .eq("cliente_auth_id", parsed.id)
+            .then(({ data }) => {
+              if (data && data.length > 0) {
+                setSavedAddresses(data as Address[]);
+                const defaultAddr = data.find((a: Address) => a.predeterminada);
+                setSelectedAddressId(defaultAddr?.id || data[0].id);
+              } else {
+                setShowNewAddress(true);
+              }
+            });
+        }
+      } catch {}
+    } else {
+      setShowNewAddress(true);
+    }
+
+    loadConfig();
+    try {
+      const stored = localStorage.getItem("cuentas_bancarias");
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        setCuentasBancarias(parsed);
+        if (parsed.length > 0) setSelectedCuentaId(parsed[0].id);
+      }
+    } catch {}
+    setLoaded(true);
+  }, [loadConfig]);
+
+  const subtotal = items.reduce((s, i) => s + i.precio * i.cantidad, 0);
+  const costoEnvioBase = 500;
+  const envioGratis =
+    metodoEntrega === "retiro" ||
+    (config && config.umbral_envio_gratis > 0 && subtotal >= config.umbral_envio_gratis);
+  const costoEnvio = envioGratis ? 0 : metodoEntrega === "envio" ? costoEnvioBase : 0;
+  const recargoTransf = config && config.recargo_transferencia > 0
+    ? metodoPago === "transferencia"
+      ? Math.round(subtotal * (config.recargo_transferencia / 100))
+      : metodoPago === "mixto" && mixtoTransferencia > 0
+        ? Math.round(mixtoTransferencia * (config.recargo_transferencia / 100))
+        : 0
+    : 0;
+  const total = subtotal + costoEnvio + recargoTransf;
+
+  const getAddressText = (): string => {
+    if (metodoEntrega !== "envio") return "";
+    if (!showNewAddress && selectedAddressId) {
+      const found = savedAddresses.find((a) => a.id === selectedAddressId);
+      if (found) {
+        return `${found.calle} ${found.numero}${found.piso ? `, Piso ${found.piso}` : ""}${found.departamento ? ` ${found.departamento}` : ""} - ${found.localidad}, ${found.provincia}${found.codigo_postal ? ` (${found.codigo_postal})` : ""}`;
+      }
+    }
+    if (showNewAddress) {
+      return `${addr.calle} ${addr.numero}${addr.piso ? `, Piso ${addr.piso}` : ""}${addr.departamento ? ` ${addr.departamento}` : ""} - ${addr.localidad}, ${addr.provincia}${addr.codigo_postal ? ` (${addr.codigo_postal})` : ""}`;
+    }
+    return "";
+  };
+
+  const handleConfirm = async () => {
+    const errs: string[] = [];
+    if (!nombre) errs.push("El nombre es obligatorio.");
+    if (!email) errs.push("El email es obligatorio.");
+    if (metodoEntrega === "retiro" && config && config.monto_minimo_pedido > 0 && subtotal < config.monto_minimo_pedido) {
+      errs.push(`El monto mínimo para retiro en local es ${formatCurrency(config.monto_minimo_pedido)}.`);
+    }
+    if (metodoEntrega === "envio" && config && subtotal < config.monto_minimo_envio) {
+      errs.push(`El monto mínimo para envío a domicilio es ${formatCurrency(config.monto_minimo_envio)}.`);
+    }
+    if (metodoEntrega === "envio" && !selectedAddressId && !showNewAddress) {
+      errs.push("Seleccioná una dirección de envío.");
+    }
+    if (metodoEntrega === "envio" && showNewAddress && (!addr.calle || !addr.numero || !addr.localidad)) {
+      errs.push("Completá la dirección de envío.");
+    }
+    if (!fechaEntrega) errs.push("Seleccioná una fecha de entrega.");
+    if (metodoPago === "mixto" && Math.abs((mixtoEfectivo + mixtoTransferencia) - (subtotal + costoEnvio)) > 0.01) {
+      errs.push("La suma de efectivo y transferencia debe igualar el total.");
+    }
+
+    if (errs.length > 0) {
+      setErrors(errs);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
+    setErrors([]);
+    setSubmitting(true);
+
+    try {
+      const { data: numData } = await supabase.rpc("next_numero", { p_tipo: "pedido" });
+      const numero = numData || ("PED-" + Date.now());
+
+      const { data: pedido, error } = await supabase
+        .from("pedidos_tienda")
+        .insert({
+          numero,
+          cliente_auth_id: clienteId || null,
+          nombre_cliente: `${nombre} ${apellido}`.trim(),
+          email,
+          telefono,
+          estado: "pendiente",
+          metodo_entrega: metodoEntrega === "retiro" ? "retiro_local" : "envio",
+          direccion_id: !showNewAddress && selectedAddressId ? selectedAddressId : null,
+          direccion_texto: getAddressText() || null,
+          fecha_entrega: fechaEntrega,
+          metodo_pago: metodoPago,
+          subtotal,
+          costo_envio: costoEnvio,
+          total,
+          observacion: observacion || null,
+        })
+        .select("id")
+        .single();
+
+      if (error) throw error;
+
+      const itemRows = items.map((item) => ({
+        pedido_id: pedido.id,
+        producto_id: item.id.split("_")[0],
+        nombre: item.nombre,
+        presentacion: item.presentacion || "Unidad",
+        cantidad: item.cantidad,
+        precio_unitario: item.precio,
+        subtotal: item.precio * item.cantidad,
+      }));
+
+      const { error: itemsError } = await supabase
+        .from("pedido_tienda_items")
+        .insert(itemRows);
+
+      if (itemsError) throw itemsError;
+
+      // Also create a venta record so it appears in the admin sales listing
+      const hoy = new Date().toLocaleDateString("en-CA", { timeZone: "America/Argentina/Buenos_Aires" });
+      // Get linked cliente_id from clientes_auth
+      let ventaClienteId = null;
+      if (clienteId) {
+        const { data: authRec } = await supabase
+          .from("clientes_auth")
+          .select("cliente_id")
+          .eq("id", clienteId)
+          .single();
+        if (authRec?.cliente_id) ventaClienteId = authRec.cliente_id;
+      }
+
+      const { data: venta } = await supabase.from("ventas").insert({
+        numero,
+        tipo_comprobante: "Pedido Web",
+        fecha: hoy,
+        cliente_id: ventaClienteId,
+        forma_pago: metodoPago === "efectivo" ? "Efectivo" : metodoPago === "transferencia" ? "Transferencia" : "Mixto",
+        moneda: "Peso",
+        subtotal,
+        descuento_porcentaje: 0,
+        recargo_porcentaje: recargoTransf > 0 ? (config?.recargo_transferencia || 0) : 0,
+        total,
+        estado: "pendiente",
+        observacion: observacion || null,
+        entregado: false,
+        origen: "tienda",
+      }).select("id").single();
+
+      // Insert venta items
+      if (venta) {
+        const ventaItemRows = items.map((item) => ({
+          venta_id: venta.id,
+          producto_id: item.id.split("_")[0],
+          descripcion: `${item.nombre} (${item.presentacion || "Unidad"})`,
+          cantidad: item.cantidad,
+          precio_unitario: item.precio,
+          subtotal: item.precio * item.cantidad,
+          unidad_medida: item.presentacion || "Unidad",
+          presentacion: item.presentacion || "Unidad",
+        }));
+        await supabase.from("venta_items").insert(ventaItemRows);
+
+        // Update stock + log movements
+        for (const item of items) {
+          const prodId = item.id.split("_")[0];
+          const match = item.id.match(/Caja \(x(\d+)\)/);
+          const presUnits = match ? Number(match[1]) : 1;
+          const unitsToDeduct = item.cantidad * presUnits;
+
+          const { data: prod } = await supabase
+            .from("productos")
+            .select("stock")
+            .eq("id", prodId)
+            .single();
+
+          if (prod) {
+            const newStock = prod.stock - unitsToDeduct;
+            await supabase
+              .from("productos")
+              .update({ stock: newStock })
+              .eq("id", prodId);
+            await supabase.from("stock_movimientos").insert({
+              producto_id: prodId,
+              tipo: "venta",
+              cantidad_antes: prod.stock,
+              cantidad_despues: newStock,
+              cantidad: unitsToDeduct,
+              referencia: `Pedido Web #${numero}`,
+              descripcion: `Venta Web - ${item.nombre} (${item.presentacion || "Unidad"})`,
+              usuario: "Tienda Online",
+              orden_id: venta.id,
+            });
+          }
+        }
+      }
+
+      localStorage.removeItem("carrito");
+      window.dispatchEvent(new Event("cart-updated"));
+      setOrderNumber(numero);
+    } catch (err) {
+      console.error(err);
+      setErrors(["Hubo un error al procesar tu pedido. Intentá de nuevo."]);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  if (!loaded) return null;
+
+  // Success state
+  if (orderNumber) {
+    return (
+      <div className="min-h-[80vh] flex items-center justify-center px-4">
+        <div className="max-w-md w-full text-center">
+          <div className="relative mx-auto w-24 h-24 mb-8">
+            <div className="absolute inset-0 bg-green-100 rounded-full animate-ping opacity-20" />
+            <div className="relative flex items-center justify-center w-24 h-24 bg-green-100 rounded-full">
+              <CheckCircle className="h-12 w-12 text-green-500" />
+            </div>
+          </div>
+
+          <h1 className="text-3xl font-bold text-gray-900 mb-2">
+            ¡Pedido confirmado!
+          </h1>
+          <p className="text-gray-500 mb-6">Gracias por tu compra en DulceSur</p>
+
+          <div className="inline-block bg-pink-50 border border-pink-200 rounded-xl px-6 py-3 mb-6">
+            <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">N.° de pedido</p>
+            <p className="text-lg font-mono font-bold text-pink-600">{orderNumber}</p>
+          </div>
+
+          <p className="text-gray-500 text-sm mb-8">
+            Te enviamos los detalles a{" "}
+            <span className="font-semibold text-gray-700">{email}</span>
+          </p>
+
+          <div className="flex flex-col sm:flex-row gap-3">
+            <Link
+              href="/cuenta/pedidos"
+              className="flex-1 inline-flex items-center justify-center gap-2 border-2 border-pink-600 text-pink-600 px-6 py-3 rounded-xl font-semibold hover:bg-pink-50 transition"
+            >
+              Ver mis pedidos
+            </Link>
+            <Link
+              href="/productos"
+              className="flex-1 inline-flex items-center justify-center gap-2 bg-pink-600 text-white px-6 py-3 rounded-xl font-semibold hover:bg-pink-700 transition"
+            >
+              Seguir comprando
+            </Link>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Empty cart
+  if (items.length === 0) {
+    return (
+      <div className="min-h-[60vh] flex items-center justify-center px-4">
+        <div className="text-center">
+          <ShoppingBag className="mx-auto h-16 w-16 text-gray-300 mb-4" />
+          <h1 className="text-2xl font-bold text-gray-900 mb-2">Tu carrito está vacío</h1>
+          <p className="text-gray-500 mb-6">Agregá productos para continuar</p>
+          <Link
+            href="/productos"
+            className="inline-flex items-center gap-2 bg-pink-600 text-white px-6 py-3 rounded-xl font-semibold hover:bg-pink-700 transition"
+          >
+            Ver productos
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  const inputClass =
+    "w-full border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-pink-500 focus:border-pink-500 transition";
+  const labelClass = "block text-sm font-medium text-gray-700 mb-1.5";
+
+  return (
+    <div className="max-w-7xl mx-auto px-4 py-8">
+      {/* Errors */}
+      {errors.length > 0 && (
+        <div className="mb-6 bg-red-50 border border-red-200 rounded-xl p-4">
+          {errors.map((e, i) => (
+            <p key={i} className="text-sm text-red-600">{e}</p>
+          ))}
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 lg:grid-cols-[1fr,420px] gap-8">
+        {/* ===== LEFT COLUMN ===== */}
+        <div className="space-y-6">
+          {/* 1. Información de Contacto */}
+          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6">
+            <div className="flex items-center gap-3 mb-6">
+              <div className="w-8 h-8 bg-pink-100 rounded-lg flex items-center justify-center">
+                <User className="h-4 w-4 text-pink-600" />
+              </div>
+              <h2 className="text-lg font-bold text-gray-900">Información de Contacto</h2>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className={labelClass}>Nombre</label>
+                <input
+                  type="text"
+                  value={nombre}
+                  onChange={(e) => setNombre(e.target.value)}
+                  className={inputClass}
+                  placeholder="Tu nombre"
+                />
+              </div>
+              <div>
+                <label className={labelClass}>Apellido</label>
+                <input
+                  type="text"
+                  value={apellido}
+                  onChange={(e) => setApellido(e.target.value)}
+                  className={inputClass}
+                  placeholder="Tu apellido"
+                />
+              </div>
+              <div>
+                <label className={labelClass}>Email</label>
+                <div className="relative">
+                  <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+                  <input
+                    type="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    className={`${inputClass} pl-10`}
+                    placeholder="tu@email.com"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className={labelClass}>Teléfono</label>
+                <div className="relative">
+                  <Phone className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+                  <input
+                    type="tel"
+                    value={telefono}
+                    onChange={(e) => setTelefono(e.target.value)}
+                    className={`${inputClass} pl-10`}
+                    placeholder="+54 9 ..."
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* 2. Método de Entrega */}
+          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6">
+            <div className="flex items-center gap-3 mb-6">
+              <div className="w-8 h-8 bg-pink-100 rounded-lg flex items-center justify-center">
+                <Truck className="h-4 w-4 text-pink-600" />
+              </div>
+              <h2 className="text-lg font-bold text-gray-900">Método de entrega</h2>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
+              {/* Retiro en tienda */}
+              <button
+                onClick={() => setMetodoEntrega("retiro")}
+                className={`flex items-start gap-3 p-4 rounded-xl border-2 transition text-left ${
+                  metodoEntrega === "retiro"
+                    ? "border-pink-500 bg-pink-50"
+                    : "border-gray-200 hover:border-pink-300"
+                }`}
+              >
+                <div
+                  className={`mt-0.5 w-5 h-5 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${
+                    metodoEntrega === "retiro" ? "border-pink-500" : "border-gray-300"
+                  }`}
+                >
+                  {metodoEntrega === "retiro" && (
+                    <div className="w-2.5 h-2.5 rounded-full bg-pink-500" />
+                  )}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-1">
+                    <Store className="h-4 w-4 text-gray-500" />
+                    <p className="font-semibold text-gray-900 text-sm">Retiro en Tienda</p>
+                  </div>
+                  <p className="text-xs text-gray-500">Retiralo en nuestro local</p>
+                  <p className="text-xs font-semibold text-green-600 mt-1">Sin costo de envío</p>
+                </div>
+              </button>
+
+              {/* Envío a domicilio */}
+              <button
+                onClick={() => setMetodoEntrega("envio")}
+                className={`flex items-start gap-3 p-4 rounded-xl border-2 transition text-left ${
+                  metodoEntrega === "envio"
+                    ? "border-pink-500 bg-pink-50"
+                    : "border-gray-200 hover:border-pink-300"
+                }`}
+              >
+                <div
+                  className={`mt-0.5 w-5 h-5 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${
+                    metodoEntrega === "envio" ? "border-pink-500" : "border-gray-300"
+                  }`}
+                >
+                  {metodoEntrega === "envio" && (
+                    <div className="w-2.5 h-2.5 rounded-full bg-pink-500" />
+                  )}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-1">
+                    <Truck className="h-4 w-4 text-gray-500" />
+                    <p className="font-semibold text-gray-900 text-sm">Envío a domicilio</p>
+                  </div>
+                  <p className="text-xs text-gray-500">Recibilo en tu dirección</p>
+                  <p className="text-xs font-semibold mt-1">
+                    {envioGratis ? (
+                      <span className="text-green-600">Sin costo de envío</span>
+                    ) : (
+                      <span className="text-gray-600">{formatCurrency(costoEnvioBase)}</span>
+                    )}
+                  </p>
+                </div>
+              </button>
+            </div>
+
+            {/* Envío address selection */}
+            {metodoEntrega === "envio" && (
+              <div className="space-y-3 border-t border-gray-100 pt-5">
+                {/* Saved addresses */}
+                {savedAddresses.length > 0 && (
+                  <div className="space-y-2">
+                    <label className={labelClass}>
+                      <MapPin className="inline h-4 w-4 mr-1" />
+                      Dirección de entrega
+                    </label>
+                    {savedAddresses.map((a) => (
+                      <button
+                        key={a.id}
+                        onClick={() => {
+                          setShowNewAddress(false);
+                          setSelectedAddressId(a.id);
+                        }}
+                        className={`w-full text-left p-3 rounded-xl border-2 transition text-sm ${
+                          !showNewAddress && selectedAddressId === a.id
+                            ? "border-pink-500 bg-pink-50"
+                            : "border-gray-200 hover:border-pink-300"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <div
+                              className={`w-4 h-4 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${
+                                !showNewAddress && selectedAddressId === a.id
+                                  ? "border-pink-500"
+                                  : "border-gray-300"
+                              }`}
+                            >
+                              {!showNewAddress && selectedAddressId === a.id && (
+                                <div className="w-2 h-2 rounded-full bg-pink-500" />
+                              )}
+                            </div>
+                            <span className="text-gray-900">
+                              {a.calle} {a.numero}
+                              {a.piso ? `, Piso ${a.piso}` : ""}
+                              {a.departamento ? ` ${a.departamento}` : ""} - {a.localidad}, {a.provincia}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2 flex-shrink-0">
+                            {a.predeterminada && (
+                              <span className="text-[10px] bg-pink-100 text-pink-600 px-2 py-0.5 rounded-full font-medium">
+                                Predeterminada
+                              </span>
+                            )}
+                            {!showNewAddress && selectedAddressId === a.id && (
+                              <span className="text-[10px] bg-green-100 text-green-600 px-2 py-0.5 rounded-full font-medium">
+                                Seleccionada
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {/* Add new address button */}
+                {!showNewAddress && (
+                  <button
+                    onClick={() => setShowNewAddress(true)}
+                    className="w-full flex items-center justify-center gap-2 p-3 rounded-xl border-2 border-dashed border-gray-300 text-sm text-pink-600 font-medium hover:border-pink-400 hover:bg-pink-50 transition"
+                  >
+                    <Plus className="h-4 w-4" />
+                    Agregar nueva dirección
+                  </button>
+                )}
+
+                {/* New address form */}
+                {showNewAddress && (
+                  <div className="bg-gray-50 rounded-xl p-4 space-y-3">
+                    <p className="text-sm font-medium text-gray-700">Nueva dirección</p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className={labelClass}>Calle</label>
+                        <input
+                          type="text"
+                          value={addr.calle}
+                          onChange={(e) => setAddr({ ...addr, calle: e.target.value })}
+                          className={inputClass}
+                        />
+                      </div>
+                      <div className="grid grid-cols-3 gap-2">
+                        <div>
+                          <label className={labelClass}>Número</label>
+                          <input
+                            type="text"
+                            value={addr.numero}
+                            onChange={(e) => setAddr({ ...addr, numero: e.target.value })}
+                            className={inputClass}
+                          />
+                        </div>
+                        <div>
+                          <label className={labelClass}>Piso</label>
+                          <input
+                            type="text"
+                            value={addr.piso}
+                            onChange={(e) => setAddr({ ...addr, piso: e.target.value })}
+                            className={inputClass}
+                          />
+                        </div>
+                        <div>
+                          <label className={labelClass}>Depto</label>
+                          <input
+                            type="text"
+                            value={addr.departamento}
+                            onChange={(e) => setAddr({ ...addr, departamento: e.target.value })}
+                            className={inputClass}
+                          />
+                        </div>
+                      </div>
+                      <div>
+                        <label className={labelClass}>Localidad</label>
+                        <input
+                          type="text"
+                          value={addr.localidad}
+                          onChange={(e) => setAddr({ ...addr, localidad: e.target.value })}
+                          className={inputClass}
+                        />
+                      </div>
+                      <div>
+                        <label className={labelClass}>Provincia</label>
+                        <input
+                          type="text"
+                          value={addr.provincia}
+                          onChange={(e) => setAddr({ ...addr, provincia: e.target.value })}
+                          className={inputClass}
+                        />
+                      </div>
+                      <div>
+                        <label className={labelClass}>Código postal</label>
+                        <input
+                          type="text"
+                          value={addr.codigo_postal}
+                          onChange={(e) => setAddr({ ...addr, codigo_postal: e.target.value })}
+                          className={inputClass}
+                        />
+                      </div>
+                      <div>
+                        <label className={labelClass}>Referencia</label>
+                        <input
+                          type="text"
+                          value={addr.referencia}
+                          onChange={(e) => setAddr({ ...addr, referencia: e.target.value })}
+                          className={inputClass}
+                          placeholder="Ej: timbre 2B"
+                        />
+                      </div>
+                    </div>
+                    {savedAddresses.length > 0 && (
+                      <button
+                        onClick={() => setShowNewAddress(false)}
+                        className="text-sm text-gray-500 hover:text-gray-700"
+                      >
+                        Cancelar
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* 3. Instrucciones de entrega */}
+          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-8 h-8 bg-pink-100 rounded-lg flex items-center justify-center">
+                <MapPin className="h-4 w-4 text-pink-600" />
+              </div>
+              <h2 className="text-lg font-bold text-gray-900">Instrucciones de entrega</h2>
+              <span className="text-xs text-gray-400">(opcional)</span>
+            </div>
+            <textarea
+              value={observacion}
+              onChange={(e) => setObservacion(e.target.value.slice(0, 500))}
+              rows={3}
+              className={inputClass}
+              placeholder="Indicaciones especiales para la entrega..."
+            />
+            <p className="text-xs text-gray-400 mt-1 text-right">
+              {observacion.length}/500 caracteres
+            </p>
+          </div>
+
+          {/* 4. Fecha de entrega */}
+          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6">
+            <div className="flex items-center gap-3 mb-6">
+              <div className="w-8 h-8 bg-pink-100 rounded-lg flex items-center justify-center">
+                <Calendar className="h-4 w-4 text-pink-600" />
+              </div>
+              <h2 className="text-lg font-bold text-gray-900">Fecha de entrega</h2>
+            </div>
+
+            {availableDates.length > 0 ? (
+              <div className="flex gap-2 overflow-x-auto pb-2">
+                {availableDates.map((d) => (
+                  <button
+                    key={d.value}
+                    onClick={() => setFechaEntrega(d.value)}
+                    className={`flex-shrink-0 flex flex-col items-center px-4 py-3 rounded-xl border-2 transition min-w-[72px] ${
+                      fechaEntrega === d.value
+                        ? "border-pink-500 bg-pink-50"
+                        : "border-gray-200 hover:border-pink-300"
+                    }`}
+                  >
+                    <span className={`text-xs font-medium ${fechaEntrega === d.value ? "text-pink-600" : "text-gray-500"}`}>
+                      {d.dayAbbr}
+                    </span>
+                    <span className={`text-xl font-bold ${fechaEntrega === d.value ? "text-pink-600" : "text-gray-900"}`}>
+                      {d.dayNum}
+                    </span>
+                    <span className={`text-xs ${fechaEntrega === d.value ? "text-pink-500" : "text-gray-400"}`}>
+                      {d.monthAbbr}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-gray-500">No hay fechas de entrega disponibles.</p>
+            )}
+          </div>
+        </div>
+
+        {/* ===== RIGHT COLUMN - Resumen del Pedido ===== */}
+        <div>
+          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6 sticky top-24">
+            <h2 className="text-lg font-bold text-gray-900 mb-5">Resumen del Pedido</h2>
+
+            {/* Items list */}
+            <div className="space-y-3 mb-5">
+              {items.map((item, idx) => (
+                <div key={idx} className="flex items-center gap-3">
+                  <div className="flex-shrink-0">
+                    {item.imagen ? (
+                      <img
+                        src={item.imagen}
+                        alt={item.nombre}
+                        className="w-12 h-12 rounded-full object-cover"
+                      />
+                    ) : (
+                      <div className="w-12 h-12 rounded-full bg-gray-100 flex items-center justify-center">
+                        <ShoppingBag className="h-5 w-5 text-gray-400" />
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-gray-900 truncate">{item.nombre}</p>
+                    <p className="text-xs text-gray-400">
+                      {item.presentacion && `${item.presentacion} · `}x{item.cantidad}
+                    </p>
+                  </div>
+                  <p className="text-sm font-semibold text-gray-900 flex-shrink-0">
+                    {formatCurrency(item.precio * item.cantidad)}
+                  </p>
+                </div>
+              ))}
+            </div>
+
+            {/* Método de Pago */}
+            <div className="border-t border-gray-100 pt-5 mb-5">
+              <h3 className="text-sm font-bold text-gray-900 mb-3">Método de Pago</h3>
+              <div className="space-y-2">
+                {/* Efectivo */}
+                <button
+                  onClick={() => { setMetodoPago("efectivo"); setMixtoEfectivo(0); setMixtoTransferencia(0); }}
+                  className={`w-full flex items-center gap-3 p-3.5 rounded-xl border-2 transition text-left text-sm ${
+                    metodoPago === "efectivo" ? "border-pink-500 bg-pink-50/50" : "border-gray-200 hover:border-pink-300"
+                  }`}
+                >
+                  <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${metodoPago === "efectivo" ? "border-pink-500" : "border-gray-300"}`}>
+                    {metodoPago === "efectivo" && <div className="w-2.5 h-2.5 rounded-full bg-pink-500" />}
+                  </div>
+                  <Banknote className="h-4 w-4 text-gray-500 flex-shrink-0" />
+                  <span className="font-medium text-gray-900">Efectivo</span>
+                </button>
+
+                {/* Transferencia */}
+                <button
+                  onClick={() => { setMetodoPago("transferencia"); setMixtoEfectivo(0); setMixtoTransferencia(0); }}
+                  className={`w-full flex items-center gap-3 p-3.5 rounded-xl border-2 transition text-left text-sm ${
+                    metodoPago === "transferencia" ? "border-pink-500 bg-pink-50/50" : "border-gray-200 hover:border-pink-300"
+                  }`}
+                >
+                  <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${metodoPago === "transferencia" ? "border-pink-500" : "border-gray-300"}`}>
+                    {metodoPago === "transferencia" && <div className="w-2.5 h-2.5 rounded-full bg-pink-500" />}
+                  </div>
+                  <Building className="h-4 w-4 text-gray-500 flex-shrink-0" />
+                  <div>
+                    <span className="font-medium text-gray-900">Transferencia</span>
+                    {config && config.recargo_transferencia > 0 && (
+                      <p className="text-[11px] text-gray-400">+{config.recargo_transferencia}% (+{formatCurrency(Math.round(subtotal * (config.recargo_transferencia / 100)))})</p>
+                    )}
+                  </div>
+                </button>
+
+                {/* Pago Mixto */}
+                <button
+                  onClick={() => setMetodoPago("mixto")}
+                  className={`w-full flex items-center gap-3 p-3.5 rounded-xl border-2 transition text-left text-sm ${
+                    metodoPago === "mixto" ? "border-pink-500 bg-pink-50/50" : "border-gray-200 hover:border-pink-300"
+                  }`}
+                >
+                  <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${metodoPago === "mixto" ? "border-pink-500" : "border-gray-300"}`}>
+                    {metodoPago === "mixto" && <div className="w-2.5 h-2.5 rounded-full bg-pink-500" />}
+                  </div>
+                  <ArrowLeftRight className="h-4 w-4 text-gray-500 flex-shrink-0" />
+                  <span className="font-medium text-gray-900">Pago Mixto</span>
+                </button>
+              </div>
+
+              {/* Bank account info for transferencia or mixto */}
+              {(metodoPago === "transferencia" || metodoPago === "mixto") && cuentasBancarias.length > 0 && (
+                <div className="mt-4 space-y-2">
+                  <p className="text-xs font-semibold text-gray-500 flex items-center gap-1.5">
+                    <span className="w-5 h-5 rounded-full bg-gray-900 text-white text-[10px] flex items-center justify-center font-bold">1</span>
+                    Selecciona a qué cuenta transferirás:
+                  </p>
+                  {cuentasBancarias.map((cb) => (
+                    <button
+                      key={cb.id}
+                      type="button"
+                      onClick={() => setSelectedCuentaId(cb.id)}
+                      className={`w-full text-left rounded-xl border-2 p-4 transition ${
+                        selectedCuentaId === cb.id
+                          ? "border-pink-500 bg-pink-50/50"
+                          : "border-gray-200 hover:border-pink-300"
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 mb-1">
+                        <Building className={`w-4 h-4 ${selectedCuentaId === cb.id ? "text-pink-600" : "text-gray-400"}`} />
+                        <span className="font-semibold text-sm text-gray-900">{cb.nombre}</span>
+                        <span className="text-[10px] bg-green-100 text-green-700 font-semibold px-2 py-0.5 rounded-full">Billetera</span>
+                      </div>
+                      <div className="text-xs text-gray-500 space-y-0.5 pl-6">
+                        {cb.alias && <p>Alias: {cb.alias}</p>}
+                        {cb.cbu_cvu && <p>CBU: {cb.cbu_cvu}</p>}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {/* Mixto: amount inputs */}
+              {metodoPago === "mixto" && (
+                <div className="mt-4 space-y-3">
+                  <p className="text-xs font-semibold text-gray-500 flex items-center gap-1.5">
+                    <span className="w-5 h-5 rounded-full bg-gray-900 text-white text-[10px] flex items-center justify-center font-bold">2</span>
+                    Ingresa el monto en efectivo:
+                  </p>
+                  <div className="rounded-xl border-2 border-orange-400 bg-orange-50/50 px-4 py-3">
+                    <p className="text-xs text-gray-500">Total a pagar: <span className="font-bold text-base text-gray-900">{formatCurrency(subtotal + costoEnvio)}</span></p>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-xs font-medium text-gray-600 flex items-center gap-1 mb-1">
+                        <Banknote className="w-3.5 h-3.5" /> Efectivo
+                      </label>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={formatThousands(mixtoEfectivo)}
+                        onChange={(e) => {
+                          const val = parseThousands(e.target.value);
+                          setMixtoEfectivo(val);
+                          setMixtoTransferencia(Math.max(0, (subtotal + costoEnvio) - val));
+                        }}
+                        placeholder="0"
+                        className="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm outline-none focus:border-pink-500 focus:ring-1 focus:ring-pink-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-gray-600 flex items-center gap-1 mb-1">
+                        <Building className="w-3.5 h-3.5" /> Transferencia
+                      </label>
+                      {(() => {
+                        const transfBase = Math.max(0, (subtotal + costoEnvio) - mixtoEfectivo);
+                        const recargo = config && config.recargo_transferencia > 0
+                          ? Math.round(transfBase * (config.recargo_transferencia / 100))
+                          : 0;
+                        return (
+                          <div className="w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm text-gray-700 font-medium">
+                            {formatCurrency(transfBase + recargo)}
+                            {recargo > 0 && (
+                              <span className="text-[10px] text-green-600 ml-1">(inc. {config!.recargo_transferencia}% recargo)</span>
+                            )}
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  </div>
+
+                  <div className="text-xs space-y-1 px-1">
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">Efectivo:</span>
+                      <span className="font-medium">{formatCurrency(mixtoEfectivo)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">Transferencia:</span>
+                      <span className="font-medium">{formatCurrency(mixtoTransferencia)}</span>
+                    </div>
+                    {recargoTransf > 0 && (
+                      <div className="flex justify-between text-green-600">
+                        <span>Recargo transf. ({config!.recargo_transferencia}%)</span>
+                        <span>+{formatCurrency(recargoTransf)}</span>
+                      </div>
+                    )}
+                    <div className="flex justify-between border-t border-gray-200 pt-1 font-bold text-gray-900">
+                      <span>Total a transferir:</span>
+                      <span>{formatCurrency(mixtoTransferencia + recargoTransf)}</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Totals */}
+            <div className="border-t border-gray-100 pt-4 space-y-2.5">
+              <div className="flex justify-between text-sm">
+                <span className="text-gray-500">Subtotal</span>
+                <span className="text-gray-900">{formatCurrency(subtotal)}</span>
+              </div>
+              {config && metodoEntrega === "envio" && config.monto_minimo_envio > 0 && subtotal < config.monto_minimo_envio && (
+                <p className="text-xs text-pink-600">
+                  Mínimo: {formatCurrency(config.monto_minimo_envio)} (faltan {formatCurrency(config.monto_minimo_envio - subtotal)})
+                </p>
+              )}
+              <div className="flex justify-between text-sm">
+                <span className="text-gray-500">Envío</span>
+                <span>
+                  {envioGratis ? (
+                    <span className="text-green-600 font-semibold">Gratis</span>
+                  ) : (
+                    <span className="text-gray-900">{formatCurrency(costoEnvio)}</span>
+                  )}
+                </span>
+              </div>
+              {recargoTransf > 0 && (
+                <div className="flex justify-between text-sm">
+                  <span className="text-green-600">Recargo</span>
+                  <span className="text-green-600">+{formatCurrency(recargoTransf)}</span>
+                </div>
+              )}
+              <div className="border-t border-dashed border-gray-200 pt-3 flex justify-between">
+                <span className="text-xl font-bold text-gray-900">Total</span>
+                <span className="text-xl font-bold text-gray-900">{formatCurrency(total)}</span>
+              </div>
+            </div>
+
+            {/* Minimum order warning */}
+            {config && metodoEntrega === "retiro" && config.monto_minimo_pedido > 0 && subtotal < config.monto_minimo_pedido && (
+              <div className="mt-4 rounded-xl bg-amber-50 border border-amber-200 px-4 py-3 text-sm text-amber-700">
+                <p className="font-medium">Monto mínimo no alcanzado</p>
+                <p className="text-xs mt-0.5">Para retiro en local el mínimo es {formatCurrency(config.monto_minimo_pedido)}. Te faltan {formatCurrency(config.monto_minimo_pedido - subtotal)}.</p>
+              </div>
+            )}
+            {config && metodoEntrega === "envio" && subtotal < config.monto_minimo_envio && (
+              <div className="mt-4 rounded-xl bg-amber-50 border border-amber-200 px-4 py-3 text-sm text-amber-700">
+                <p className="font-medium">Monto mínimo no alcanzado</p>
+                <p className="text-xs mt-0.5">Para envío a domicilio el mínimo es {formatCurrency(config.monto_minimo_envio)}. Te faltan {formatCurrency(config.monto_minimo_envio - subtotal)}.</p>
+              </div>
+            )}
+
+            {/* Confirm button */}
+            <button
+              onClick={handleConfirm}
+              disabled={submitting || (metodoEntrega === "retiro" && !!config && config.monto_minimo_pedido > 0 && subtotal < config.monto_minimo_pedido) || (metodoEntrega === "envio" && !!config && subtotal < config.monto_minimo_envio)}
+              className="mt-5 w-full bg-pink-500 hover:bg-pink-600 text-white rounded-xl py-3 font-semibold transition flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {submitting ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Procesando...
+                </>
+              ) : (
+                "Crear Pedido"
+              )}
+            </button>
+
+            {/* Trust badge */}
+            <div className="mt-4 flex items-center justify-center gap-1.5 text-xs text-gray-400">
+              <Shield className="h-3.5 w-3.5" />
+              Pago seguro y encriptado
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

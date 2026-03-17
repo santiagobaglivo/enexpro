@@ -1,0 +1,818 @@
+"use client";
+
+import { useEffect, useState, useCallback } from "react";
+import { supabase } from "@/lib/supabase";
+import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
+import { Separator } from "@/components/ui/separator";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  Plus,
+  Pencil,
+  Trash2,
+  ToggleLeft,
+  ToggleRight,
+  Calendar,
+  Percent,
+  Tag,
+  Package,
+  ChevronRight,
+  ChevronDown,
+  Search,
+  Check,
+  X,
+  Loader2,
+  ArrowLeft,
+  ArrowRight,
+  Clock,
+  AlertCircle,
+} from "lucide-react";
+
+function formatCurrency(value: number) {
+  return new Intl.NumberFormat("es-AR", {
+    style: "currency",
+    currency: "ARS",
+    minimumFractionDigits: 0,
+  }).format(value);
+}
+
+interface Descuento {
+  id: string;
+  nombre: string;
+  descripcion: string | null;
+  porcentaje: number;
+  fecha_inicio: string;
+  fecha_fin: string | null;
+  aplica_a: string;
+  categorias_ids: string[];
+  productos_ids: string[];
+  presentacion: string;
+  activo: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+interface Categoria {
+  id: string;
+  nombre: string;
+}
+
+interface Subcategoria {
+  id: string;
+  nombre: string;
+  categoria_id: string;
+}
+
+const STEPS = [
+  { label: "Información", desc: "Nombre y descripción" },
+  { label: "Porcentaje", desc: "Valor del descuento" },
+  { label: "Vigencia", desc: "Período de validez" },
+  { label: "Aplicar a", desc: "Productos o categorías" },
+];
+
+const QUICK_PERCENTS = [5, 10, 15, 20, 25, 30, 50];
+
+function getEstado(d: Descuento): "activo" | "vencido" | "inactivo" {
+  if (!d.activo) return "inactivo";
+  if (d.fecha_fin) {
+    const fin = new Date(d.fecha_fin + "T23:59:59");
+    if (fin < new Date()) return "vencido";
+  }
+  const inicio = new Date(d.fecha_inicio);
+  if (inicio > new Date()) return "activo"; // futuro pero activo
+  return "activo";
+}
+
+function estadoBadge(estado: "activo" | "vencido" | "inactivo") {
+  switch (estado) {
+    case "activo":
+      return <Badge className="bg-green-100 text-green-700 hover:bg-green-100">Activo</Badge>;
+    case "vencido":
+      return <Badge className="bg-red-100 text-red-700 hover:bg-red-100">Vencido</Badge>;
+    case "inactivo":
+      return <Badge className="bg-gray-100 text-gray-500 hover:bg-gray-100">Inactivo</Badge>;
+  }
+}
+
+function formatDate(d: string) {
+  return new Date(d + "T00:00:00").toLocaleDateString("es-AR", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  });
+}
+
+function daysBetween(a: string, b: string) {
+  const d1 = new Date(a);
+  const d2 = new Date(b);
+  return Math.round((d2.getTime() - d1.getTime()) / (1000 * 60 * 60 * 24));
+}
+
+export default function DescuentosPage() {
+  const [descuentos, setDescuentos] = useState<Descuento[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  // wizard state
+  const [step, setStep] = useState(0);
+  const [nombre, setNombre] = useState("");
+  const [descripcion, setDescripcion] = useState("");
+  const [porcentaje, setPorcentaje] = useState(10);
+  const [fechaInicio, setFechaInicio] = useState(() => new Date().toISOString().split("T")[0]);
+  const [fechaFin, setFechaFin] = useState("");
+  const [aplicaA, setAplicaA] = useState("todos");
+  const [categoriasIds, setCategoriasIds] = useState<string[]>([]);
+  const [presentacion, setPresentacion] = useState("todas");
+
+  // categories for step 4
+  const [categorias, setCategorias] = useState<Categoria[]>([]);
+  const [subcategorias, setSubcategorias] = useState<Subcategoria[]>([]);
+  const [catSearch, setCatSearch] = useState("");
+  const [expandedCats, setExpandedCats] = useState<string[]>([]);
+
+  // editing
+  const [editId, setEditId] = useState<string | null>(null);
+
+  const fetchDescuentos = useCallback(async () => {
+    setLoading(true);
+    const { data } = await supabase
+      .from("descuentos")
+      .select("*")
+      .order("created_at", { ascending: false });
+    setDescuentos(data ?? []);
+    setLoading(false);
+  }, []);
+
+  const fetchCategorias = useCallback(async () => {
+    const [{ data: cats }, { data: subs }] = await Promise.all([
+      supabase.from("categorias").select("id, nombre").order("nombre"),
+      supabase.from("subcategorias").select("id, nombre, categoria_id").order("nombre"),
+    ]);
+    setCategorias(cats ?? []);
+    setSubcategorias(subs ?? []);
+  }, []);
+
+  useEffect(() => {
+    fetchDescuentos();
+    fetchCategorias();
+  }, [fetchDescuentos, fetchCategorias]);
+
+  const resetWizard = () => {
+    setStep(0);
+    setNombre("");
+    setDescripcion("");
+    setPorcentaje(10);
+    setFechaInicio(new Date().toISOString().split("T")[0]);
+    setFechaFin("");
+    setAplicaA("todos");
+    setCategoriasIds([]);
+    setPresentacion("todas");
+    setEditId(null);
+    setCatSearch("");
+    setExpandedCats([]);
+  };
+
+  const openCreate = () => {
+    resetWizard();
+    setDialogOpen(true);
+  };
+
+  const openEdit = (d: Descuento) => {
+    setEditId(d.id);
+    setStep(0);
+    setNombre(d.nombre);
+    setDescripcion(d.descripcion ?? "");
+    setPorcentaje(Number(d.porcentaje));
+    setFechaInicio(d.fecha_inicio);
+    setFechaFin(d.fecha_fin ?? "");
+    setAplicaA(d.aplica_a);
+    setCategoriasIds(d.categorias_ids ?? []);
+    setPresentacion(d.presentacion);
+    setDialogOpen(true);
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    const payload = {
+      nombre,
+      descripcion: descripcion || null,
+      porcentaje,
+      fecha_inicio: fechaInicio,
+      fecha_fin: fechaFin || null,
+      aplica_a: aplicaA,
+      categorias_ids: aplicaA === "categorias" ? categoriasIds : [],
+      productos_ids: [],
+      presentacion,
+      updated_at: new Date().toISOString(),
+    };
+
+    if (editId) {
+      await supabase.from("descuentos").update(payload).eq("id", editId);
+    } else {
+      await supabase.from("descuentos").insert(payload);
+    }
+    setSaving(false);
+    setDialogOpen(false);
+    fetchDescuentos();
+  };
+
+  const toggleActivo = async (d: Descuento) => {
+    await supabase.from("descuentos").update({ activo: !d.activo, updated_at: new Date().toISOString() }).eq("id", d.id);
+    fetchDescuentos();
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!confirm("¿Eliminar este descuento?")) return;
+    await supabase.from("descuentos").delete().eq("id", id);
+    fetchDescuentos();
+  };
+
+  // stats
+  const today = new Date();
+  const totalDescuentos = descuentos.length;
+  const activos = descuentos.filter((d) => getEstado(d) === "activo").length;
+  const vencidos = descuentos.filter((d) => getEstado(d) === "vencido").length;
+  const proximosVencer = descuentos.filter((d) => {
+    if (!d.activo || !d.fecha_fin) return false;
+    const fin = new Date(d.fecha_fin);
+    const diff = (fin.getTime() - today.getTime()) / (1000 * 60 * 60 * 24);
+    return diff >= 0 && diff <= 7;
+  }).length;
+
+  // category helpers
+  const subsForCat = (catId: string) => subcategorias.filter((s) => s.categoria_id === catId);
+  const filteredCats = categorias.filter((c) =>
+    c.nombre.toLowerCase().includes(catSearch.toLowerCase())
+  );
+
+  const toggleCatExpand = (id: string) => {
+    setExpandedCats((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
+  };
+
+  const toggleCatSelect = (id: string) => {
+    setCategoriasIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
+  };
+
+  const addDuration = (days: number | null) => {
+    if (days === null) {
+      setFechaFin("");
+      return;
+    }
+    const d = new Date(fechaInicio);
+    d.setDate(d.getDate() + days);
+    setFechaFin(d.toISOString().split("T")[0]);
+  };
+
+  const canNext = () => {
+    if (step === 0) return nombre.trim().length > 0;
+    if (step === 1) return porcentaje > 0 && porcentaje <= 100;
+    if (step === 2) return fechaInicio.length > 0;
+    return true;
+  };
+
+  // Vigencia display
+  const vigenciaDias = fechaInicio && fechaFin ? daysBetween(fechaInicio, fechaFin) : null;
+
+  const aplicaALabel = (v: string) => {
+    switch (v) {
+      case "todos": return "Todos los productos";
+      case "categorias": return "Categorías específicas";
+      case "productos": return "Productos específicos";
+      default: return v;
+    }
+  };
+
+  const presentacionLabel = (v: string) => {
+    switch (v) {
+      case "todas": return "Todas las presentaciones";
+      case "unidad": return "Solo unidad";
+      case "caja": return "Solo caja cerrada";
+      default: return v;
+    }
+  };
+
+  return (
+    <div className="p-6 space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold">Descuentos</h1>
+          <p className="text-sm text-muted-foreground">Gestión de descuentos y promociones</p>
+        </div>
+        <Button onClick={openCreate}>
+          <Plus className="w-4 h-4 mr-2" />
+          Crear nuevo descuento
+        </Button>
+      </div>
+
+      {/* Stats */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <Card>
+          <CardContent className="p-4">
+            <div className="text-sm text-muted-foreground">Total descuentos</div>
+            <div className="text-2xl font-bold">{totalDescuentos}</div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-4">
+            <div className="text-sm text-muted-foreground">Activos</div>
+            <div className="text-2xl font-bold text-green-600">{activos}</div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-4">
+            <div className="text-sm text-muted-foreground">Vencidos</div>
+            <div className="text-2xl font-bold text-red-600">{vencidos}</div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-4">
+            <div className="text-sm text-muted-foreground">Próximos a vencer</div>
+            <div className="text-2xl font-bold text-amber-600">{proximosVencer}</div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Table */}
+      <Card>
+        <CardContent className="p-0">
+          {loading ? (
+            <div className="flex items-center justify-center py-12">
+              <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+            </div>
+          ) : descuentos.length === 0 ? (
+            <div className="text-center py-12 text-muted-foreground">
+              <Tag className="w-10 h-10 mx-auto mb-3 opacity-40" />
+              <p>No hay descuentos creados</p>
+              <Button variant="outline" className="mt-3" onClick={openCreate}>
+                <Plus className="w-4 h-4 mr-2" /> Crear descuento
+              </Button>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b bg-muted/50">
+                    <th className="text-left px-4 py-3 font-medium">Nombre</th>
+                    <th className="text-left px-4 py-3 font-medium">Porcentaje</th>
+                    <th className="text-left px-4 py-3 font-medium">Vigencia</th>
+                    <th className="text-left px-4 py-3 font-medium">Aplica a</th>
+                    <th className="text-left px-4 py-3 font-medium">Presentación</th>
+                    <th className="text-left px-4 py-3 font-medium">Estado</th>
+                    <th className="text-right px-4 py-3 font-medium">Acciones</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {descuentos.map((d) => {
+                    const estado = getEstado(d);
+                    return (
+                      <tr key={d.id} className="border-b hover:bg-muted/30">
+                        <td className="px-4 py-3 font-medium">{d.nombre}</td>
+                        <td className="px-4 py-3">
+                          <Badge variant="secondary">
+                            <Percent className="w-3 h-3 mr-1" />
+                            {Number(d.porcentaje)}%
+                          </Badge>
+                        </td>
+                        <td className="px-4 py-3 text-muted-foreground">
+                          {d.fecha_fin
+                            ? `${formatDate(d.fecha_inicio)} - ${formatDate(d.fecha_fin)}`
+                            : "Permanente"}
+                        </td>
+                        <td className="px-4 py-3 capitalize">{aplicaALabel(d.aplica_a)}</td>
+                        <td className="px-4 py-3 capitalize">{presentacionLabel(d.presentacion)}</td>
+                        <td className="px-4 py-3">{estadoBadge(estado)}</td>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center justify-end gap-1">
+                            <Button variant="ghost" size="icon" onClick={() => openEdit(d)}>
+                              <Pencil className="w-4 h-4" />
+                            </Button>
+                            <Button variant="ghost" size="icon" onClick={() => toggleActivo(d)}>
+                              {d.activo ? (
+                                <ToggleRight className="w-4 h-4 text-green-600" />
+                              ) : (
+                                <ToggleLeft className="w-4 h-4 text-gray-400" />
+                              )}
+                            </Button>
+                            <Button variant="ghost" size="icon" onClick={() => handleDelete(d.id)}>
+                              <Trash2 className="w-4 h-4 text-red-500" />
+                            </Button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Create / Edit Dialog */}
+      <Dialog open={dialogOpen} onOpenChange={(v) => { if (!v) { setDialogOpen(false); resetWizard(); } else setDialogOpen(true); }}>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>{editId ? "Editar Descuento" : "Crear Nuevo Descuento"}</DialogTitle>
+          </DialogHeader>
+
+          {/* Step indicator */}
+          <div className="flex items-center justify-center gap-0 my-4">
+            {STEPS.map((s, i) => (
+              <div key={i} className="flex items-center">
+                <div className="flex flex-col items-center">
+                  <div
+                    className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold border-2 transition-colors ${
+                      i < step
+                        ? "bg-primary text-primary-foreground border-primary"
+                        : i === step
+                        ? "border-primary text-primary bg-primary/10"
+                        : "border-muted-foreground/30 text-muted-foreground/50"
+                    }`}
+                  >
+                    {i < step ? <Check className="w-4 h-4" /> : i + 1}
+                  </div>
+                  <span className={`text-[10px] mt-1 ${i === step ? "text-primary font-medium" : "text-muted-foreground/50"}`}>
+                    {s.label}
+                  </span>
+                </div>
+                {i < STEPS.length - 1 && (
+                  <div className={`w-12 h-0.5 mx-1 mt-[-12px] ${i < step ? "bg-primary" : "bg-muted-foreground/20"}`} />
+                )}
+              </div>
+            ))}
+          </div>
+
+          <Separator />
+
+          {/* Step 1 - Información */}
+          {step === 0 && (
+            <div className="space-y-4 py-4">
+              <div className="space-y-2">
+                <Label htmlFor="nombre">Nombre del Descuento *</Label>
+                <Input
+                  id="nombre"
+                  value={nombre}
+                  onChange={(e) => setNombre(e.target.value)}
+                  placeholder="Ej: Promo Verano 2026"
+                />
+                <p className="text-xs text-muted-foreground">Un nombre descriptivo para identificar este descuento.</p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="descripcion">Descripción (opcional)</Label>
+                <textarea
+                  id="descripcion"
+                  className="flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  value={descripcion}
+                  onChange={(e) => setDescripcion(e.target.value)}
+                  placeholder="Detalles adicionales sobre el descuento..."
+                />
+                <p className="text-xs text-muted-foreground">Información adicional sobre las condiciones del descuento.</p>
+              </div>
+              <div className="flex justify-end">
+                <Button onClick={() => setStep(1)} disabled={!canNext()}>
+                  Siguiente <ArrowRight className="w-4 h-4 ml-2" />
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {/* Step 2 - Porcentaje */}
+          {step === 1 && (
+            <div className="space-y-6 py-4">
+              <div className="flex flex-col items-center gap-1">
+                <span className="text-5xl font-bold text-primary">{porcentaje} %</span>
+                <span className="text-sm text-muted-foreground">de descuento</span>
+              </div>
+
+              <div className="px-4">
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  value={porcentaje}
+                  onChange={(e) => setPorcentaje(Number(e.target.value))}
+                  className="w-full accent-primary"
+                />
+                <div className="flex justify-between text-xs text-muted-foreground mt-1">
+                  <span>0%</span>
+                  <span>50%</span>
+                  <span>100%</span>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Valor exacto</Label>
+                <div className="flex items-center gap-2">
+                  <Input
+                    type="number"
+                    min={0}
+                    max={100}
+                    value={porcentaje}
+                    onChange={(e) => setPorcentaje(Math.min(100, Math.max(0, Number(e.target.value))))}
+                    className="w-32"
+                  />
+                  <span className="text-muted-foreground font-medium">%</span>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Valores rápidos</Label>
+                <div className="flex flex-wrap gap-2">
+                  {QUICK_PERCENTS.map((v) => (
+                    <Button
+                      key={v}
+                      variant={porcentaje === v ? "default" : "outline"}
+                      size="sm"
+                      onClick={() => setPorcentaje(v)}
+                    >
+                      {v}%
+                    </Button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex justify-between">
+                <Button variant="outline" onClick={() => setStep(0)}>
+                  <ArrowLeft className="w-4 h-4 mr-2" /> Anterior
+                </Button>
+                <div className="flex gap-2">
+                  <Button variant="ghost" onClick={() => { setDialogOpen(false); resetWizard(); }}>Cancelar</Button>
+                  <Button onClick={() => setStep(2)} disabled={!canNext()}>
+                    Siguiente <ArrowRight className="w-4 h-4 ml-2" />
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Step 3 - Vigencia */}
+          {step === 2 && (
+            <div className="space-y-6 py-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="fecha_inicio">
+                    <Calendar className="w-4 h-4 inline mr-1" />
+                    Fecha de Inicio *
+                  </Label>
+                  <Input
+                    id="fecha_inicio"
+                    type="date"
+                    value={fechaInicio}
+                    onChange={(e) => setFechaInicio(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="fecha_fin">
+                    <Calendar className="w-4 h-4 inline mr-1" />
+                    Fecha de Fin (opcional)
+                  </Label>
+                  <Input
+                    id="fecha_fin"
+                    type="date"
+                    value={fechaFin}
+                    onChange={(e) => setFechaFin(e.target.value)}
+                  />
+                </div>
+              </div>
+
+              {fechaInicio && (
+                <div className="rounded-lg border bg-blue-50 dark:bg-blue-950/30 p-4 flex items-start gap-3">
+                  <AlertCircle className="w-5 h-5 text-blue-500 shrink-0 mt-0.5" />
+                  <div className="text-sm">
+                    <p className="font-medium">
+                      Vigencia: {vigenciaDias !== null ? `${vigenciaDias} día(s)` : "Sin límite"}
+                    </p>
+                    <p className="text-muted-foreground">
+                      Desde {formatDate(fechaInicio)}
+                      {fechaFin ? ` hasta ${formatDate(fechaFin)}` : " (permanente)"}
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              <div className="space-y-2">
+                <Label>Duraciones rápidas</Label>
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="outline" size="sm" onClick={() => addDuration(7)}>
+                    <Clock className="w-3 h-3 mr-1" /> 1 semana
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => addDuration(14)}>
+                    <Clock className="w-3 h-3 mr-1" /> 2 semanas
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => addDuration(30)}>
+                    <Clock className="w-3 h-3 mr-1" /> 1 mes
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => addDuration(90)}>
+                    <Clock className="w-3 h-3 mr-1" /> 3 meses
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => addDuration(null)}>
+                    <Clock className="w-3 h-3 mr-1" /> Sin límite
+                  </Button>
+                </div>
+              </div>
+
+              <div className="flex justify-between">
+                <Button variant="outline" onClick={() => setStep(1)}>
+                  <ArrowLeft className="w-4 h-4 mr-2" /> Anterior
+                </Button>
+                <div className="flex gap-2">
+                  <Button variant="ghost" onClick={() => { setDialogOpen(false); resetWizard(); }}>Cancelar</Button>
+                  <Button onClick={() => setStep(3)} disabled={!canNext()}>
+                    Siguiente <ArrowRight className="w-4 h-4 ml-2" />
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Step 4 - Aplicar a */}
+          {step === 3 && (
+            <div className="space-y-6 py-4">
+              {/* Aplica a */}
+              <div className="space-y-2">
+                <Label>Aplica a</Label>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  {[
+                    { value: "todos", label: "Todos los productos", desc: "Aplica a todo el catálogo", icon: Package },
+                    { value: "categorias", label: "Categorías específicas", desc: "Seleccioná categorías", icon: Tag },
+                    { value: "productos", label: "Productos específicos", desc: "Próximamente", icon: Package, disabled: true },
+                  ].map((opt) => (
+                    <button
+                      key={opt.value}
+                      disabled={opt.disabled}
+                      onClick={() => setAplicaA(opt.value)}
+                      className={`relative flex flex-col items-start p-4 rounded-lg border-2 text-left transition-colors ${
+                        aplicaA === opt.value
+                          ? "border-primary bg-primary/5"
+                          : opt.disabled
+                          ? "border-muted opacity-50 cursor-not-allowed"
+                          : "border-muted hover:border-muted-foreground/30 cursor-pointer"
+                      }`}
+                    >
+                      {aplicaA === opt.value && (
+                        <div className="absolute top-2 right-2 w-5 h-5 rounded-full bg-primary flex items-center justify-center">
+                          <Check className="w-3 h-3 text-primary-foreground" />
+                        </div>
+                      )}
+                      <opt.icon className="w-5 h-5 mb-2 text-muted-foreground" />
+                      <span className="text-sm font-medium">{opt.label}</span>
+                      <span className="text-xs text-muted-foreground">{opt.desc}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Category tree */}
+              {aplicaA === "categorias" && (
+                <div className="space-y-3">
+                  <div className="relative">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                    <Input
+                      className="pl-9"
+                      placeholder="Buscar categorías..."
+                      value={catSearch}
+                      onChange={(e) => setCatSearch(e.target.value)}
+                    />
+                  </div>
+                  <div className="border rounded-lg max-h-60 overflow-y-auto divide-y">
+                    {filteredCats.map((cat) => {
+                      const subs = subsForCat(cat.id);
+                      const expanded = expandedCats.includes(cat.id);
+                      const selected = categoriasIds.includes(cat.id);
+                      return (
+                        <div key={cat.id}>
+                          <div className="flex items-center gap-2 px-3 py-2 hover:bg-muted/50">
+                            {subs.length > 0 && (
+                              <button onClick={() => toggleCatExpand(cat.id)} className="shrink-0">
+                                {expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                              </button>
+                            )}
+                            {subs.length === 0 && <span className="w-4" />}
+                            <button
+                              onClick={() => toggleCatSelect(cat.id)}
+                              className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 ${
+                                selected ? "bg-primary border-primary" : "border-muted-foreground/40"
+                              }`}
+                            >
+                              {selected && <Check className="w-3 h-3 text-primary-foreground" />}
+                            </button>
+                            <span className="text-sm flex-1">{cat.nombre}</span>
+                            {subs.length > 0 && (
+                              <span className="text-xs text-muted-foreground">{subs.length} subcategorías</span>
+                            )}
+                          </div>
+                          {expanded && subs.map((sub) => {
+                            const subSelected = categoriasIds.includes(sub.id);
+                            return (
+                              <div key={sub.id} className="flex items-center gap-2 px-3 py-1.5 pl-12 hover:bg-muted/30">
+                                <button
+                                  onClick={() => toggleCatSelect(sub.id)}
+                                  className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 ${
+                                    subSelected ? "bg-primary border-primary" : "border-muted-foreground/40"
+                                  }`}
+                                >
+                                  {subSelected && <Check className="w-3 h-3 text-primary-foreground" />}
+                                </button>
+                                <span className="text-sm text-muted-foreground">{sub.nombre}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              <Separator />
+
+              {/* Presentación */}
+              <div className="space-y-2">
+                <Label>Presentación</Label>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  {[
+                    { value: "todas", label: "Todas las presentaciones" },
+                    { value: "unidad", label: "Solo unidad" },
+                    { value: "caja", label: "Solo caja cerrada" },
+                  ].map((opt) => (
+                    <button
+                      key={opt.value}
+                      onClick={() => setPresentacion(opt.value)}
+                      className={`p-3 rounded-lg border-2 text-sm font-medium text-center transition-colors ${
+                        presentacion === opt.value
+                          ? "border-primary bg-primary/5 text-primary"
+                          : "border-muted hover:border-muted-foreground/30"
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <Separator />
+
+              {/* Resumen */}
+              <div className="space-y-2">
+                <Label className="text-base font-semibold">Resumen del descuento</Label>
+                <div className="rounded-lg border bg-muted/30 p-4 space-y-2 text-sm">
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Nombre</span>
+                    <span className="font-medium">{nombre || "—"}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Descuento</span>
+                    <span className="font-medium">{porcentaje}%</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Desde</span>
+                    <span className="font-medium">{fechaInicio ? formatDate(fechaInicio) : "—"}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Hasta</span>
+                    <span className="font-medium">{fechaFin ? formatDate(fechaFin) : "Sin límite"}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Aplica a</span>
+                    <span className="font-medium">{aplicaALabel(aplicaA)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Presentación</span>
+                    <span className="font-medium">{presentacionLabel(presentacion)}</span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex justify-between">
+                <Button variant="outline" onClick={() => setStep(2)}>
+                  <ArrowLeft className="w-4 h-4 mr-2" /> Anterior
+                </Button>
+                <div className="flex gap-2">
+                  <Button variant="ghost" onClick={() => { setDialogOpen(false); resetWizard(); }}>Cancelar</Button>
+                  <Button onClick={handleSave} disabled={saving}>
+                    {saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+                    {editId ? "Guardar Cambios" : "Crear Descuento"}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}

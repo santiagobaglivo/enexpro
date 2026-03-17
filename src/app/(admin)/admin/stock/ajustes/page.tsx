@@ -1,0 +1,583 @@
+"use client";
+
+import { useEffect, useState, useCallback, useRef } from "react";
+import { supabase } from "@/lib/supabase";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "@/components/ui/select";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  Plus, Search, Loader2, AlertTriangle, X,
+} from "lucide-react";
+import { todayARG } from "@/lib/formatters";
+
+/* ─── Types ─── */
+interface Producto {
+  id: string;
+  codigo: string;
+  nombre: string;
+  stock: number;
+  costo: number;
+  unidad_medida?: string;
+}
+
+interface AjusteRow {
+  producto_id: string;
+  codigo: string;
+  nombre: string;
+  cantidad: number;
+  unidad: string;
+  costo: number;
+  subtotal: number;
+  motivo: string;
+  comentario: string;
+}
+
+interface Ajuste {
+  id: string;
+  fecha: string;
+  motivo: string;
+  observacion: string | null;
+  usuario: string | null;
+}
+
+const MOTIVOS_GLOBALES = [
+  "Definir el motivo por artículo",
+  "Mercadería defectuosa",
+  "Mercadería vencida",
+  "Consumo interno",
+  "Robo interno",
+  "Robo por agentes externos",
+  "Diferencia de inventario",
+];
+
+const MOTIVOS_ITEM = [
+  "Mercadería defectuosa",
+  "Mercadería vencida",
+  "Consumo interno",
+  "Robo interno",
+  "Robo por agentes externos",
+  "Diferencia de inventario",
+  "Otro",
+];
+
+function formatCurrency(v: number) {
+  return new Intl.NumberFormat("es-AR", {
+    style: "currency", currency: "ARS", minimumFractionDigits: 0,
+  }).format(v);
+}
+
+function formatDate(fecha: string) {
+  return new Date(fecha + "T12:00:00").toLocaleDateString("es-AR");
+}
+
+/* ─── Main component ─── */
+export default function AjustesStockPage() {
+  const [ajustes, setAjustes] = useState<Ajuste[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [productos, setProductos] = useState<Producto[]>([]);
+
+  // Form state
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [fecha, setFecha] = useState(todayARG());
+  const [usuario, setUsuario] = useState("Admin");
+  const [motivoGlobal, setMotivoGlobal] = useState(MOTIVOS_GLOBALES[0]);
+  const [observacion, setObservacion] = useState("");
+  const [rows, setRows] = useState<AjusteRow[]>([]);
+  const [selectedRowIdx, setSelectedRowIdx] = useState<number | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  // Product search
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [productSearch, setProductSearch] = useState("");
+
+  // Detail
+  const [detailAjuste, setDetailAjuste] = useState<Ajuste | null>(null);
+  const [detailItems, setDetailItems] = useState<any[]>([]);
+
+  const codigoInputRef = useRef<HTMLInputElement>(null);
+
+  const fetchData = useCallback(async () => {
+    setLoading(true);
+    const [{ data: aj }, { data: prods }] = await Promise.all([
+      supabase.from("ajustes_stock").select("*").order("created_at", { ascending: false }).limit(50),
+      supabase.from("productos").select("id, codigo, nombre, stock, costo, unidad_medida").eq("activo", true).order("nombre"),
+    ]);
+    setAjustes((aj as Ajuste[]) || []);
+    setProductos((prods as Producto[]) || []);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { fetchData(); }, [fetchData]);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    if (!dialogOpen) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "F1") { e.preventDefault(); setSearchOpen(true); }
+      if (e.key === "Delete" && selectedRowIdx !== null) {
+        setRows((prev) => prev.filter((_, i) => i !== selectedRowIdx));
+        setSelectedRowIdx(null);
+      }
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [dialogOpen, selectedRowIdx]);
+
+  const openNew = () => {
+    setFecha(todayARG());
+    setUsuario("Admin");
+    setMotivoGlobal(MOTIVOS_GLOBALES[0]);
+    setObservacion("");
+    setRows([]);
+    setSelectedRowIdx(null);
+    setDialogOpen(true);
+  };
+
+  const addProduct = (p: Producto) => {
+    const motivo = motivoGlobal === MOTIVOS_GLOBALES[0] ? "" : motivoGlobal;
+    setRows((prev) => {
+      const existing = prev.findIndex((r) => r.producto_id === p.id);
+      if (existing >= 0) {
+        const next = [...prev];
+        next[existing] = { ...next[existing], cantidad: next[existing].cantidad + 1, subtotal: (next[existing].cantidad + 1) * next[existing].costo };
+        return next;
+      }
+      return [...prev, {
+        producto_id: p.id,
+        codigo: p.codigo,
+        nombre: p.nombre,
+        cantidad: 1,
+        unidad: p.unidad_medida || "UN",
+        costo: p.costo || 0,
+        subtotal: p.costo || 0,
+        motivo,
+        comentario: "",
+      }];
+    });
+    setSearchOpen(false);
+    setProductSearch("");
+  };
+
+  const updateRow = <K extends keyof AjusteRow>(idx: number, key: K, value: AjusteRow[K]) => {
+    setRows((prev) => {
+      const next = [...prev];
+      next[idx] = { ...next[idx], [key]: value };
+      if (key === "cantidad" || key === "costo") {
+        const qty = key === "cantidad" ? Number(value) : next[idx].cantidad;
+        const cost = key === "costo" ? Number(value) : next[idx].costo;
+        next[idx].subtotal = qty * cost;
+      }
+      return next;
+    });
+  };
+
+  const removeRow = (idx: number) => {
+    setRows((prev) => prev.filter((_, i) => i !== idx));
+    setSelectedRowIdx(null);
+  };
+
+  const total = rows.reduce((a, r) => a + r.subtotal, 0);
+
+  const handleSave = async () => {
+    if (rows.length === 0) return;
+    setSaving(true);
+
+    const { data: ajuste } = await supabase.from("ajustes_stock").insert({
+      fecha, motivo: motivoGlobal, observacion: observacion || null, usuario,
+    }).select("id").single();
+
+    if (ajuste) {
+      for (const row of rows) {
+        const prod = productos.find((p) => p.id === row.producto_id);
+        if (!prod) continue;
+        const stockAntes = prod.stock;
+        const stockDespues = Math.max(0, stockAntes - row.cantidad);
+        const motivo = row.motivo || motivoGlobal;
+
+        await supabase.from("ajuste_stock_items").insert({
+          ajuste_id: ajuste.id,
+          producto_id: row.producto_id,
+          cantidad: row.cantidad,
+          stock_antes: stockAntes,
+          stock_despues: stockDespues,
+        });
+
+        await supabase.from("productos").update({ stock: stockDespues }).eq("id", row.producto_id);
+
+        await supabase.from("stock_movimientos").insert({
+          producto_id: row.producto_id,
+          tipo: "ajuste",
+          cantidad_antes: stockAntes,
+          cantidad_despues: stockDespues,
+          cantidad: row.cantidad,
+          referencia: `Baja de stock - ${motivo}`,
+          descripcion: `${motivo}${row.comentario ? `: ${row.comentario}` : ""}`,
+          usuario,
+          orden_id: ajuste.id,
+        });
+      }
+    }
+
+    setDialogOpen(false);
+    fetchData();
+    setSaving(false);
+  };
+
+  const viewDetail = async (aj: Ajuste) => {
+    setDetailAjuste(aj);
+    const { data } = await supabase.from("ajuste_stock_items").select("*").eq("ajuste_id", aj.id);
+    const itemsWithProd = (data || []).map((d: any) => ({
+      ...d,
+      producto: productos.find((p) => p.id === d.producto_id),
+    }));
+    setDetailItems(itemsWithProd);
+  };
+
+  const filteredSearch = productos.filter(
+    (p) => p.nombre.toLowerCase().includes(productSearch.toLowerCase()) || p.codigo.toLowerCase().includes(productSearch.toLowerCase())
+  );
+
+  return (
+    <div className="p-6 lg:p-8 space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Ajustes de Stock</h1>
+          <p className="text-muted-foreground text-sm">Bajas por merma, vencimiento, rotura, robo y otros</p>
+        </div>
+        <Button onClick={openNew}>
+          <Plus className="w-4 h-4 mr-2" />Nuevo Ajuste
+        </Button>
+      </div>
+
+      {/* History table */}
+      {loading ? (
+        <div className="flex justify-center py-12"><Loader2 className="w-6 h-6 animate-spin" /></div>
+      ) : ajustes.length === 0 ? (
+        <div className="border rounded-lg p-12 text-center text-muted-foreground">
+          <AlertTriangle className="w-12 h-12 mx-auto mb-3 opacity-30" />
+          <p>No hay ajustes registrados</p>
+        </div>
+      ) : (
+        <div className="border rounded-lg overflow-hidden">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b bg-muted/50 text-muted-foreground text-xs">
+                <th className="text-left py-2.5 px-4 font-medium">Fecha</th>
+                <th className="text-left py-2.5 px-4 font-medium">Usuario</th>
+                <th className="text-left py-2.5 px-4 font-medium">Motivo</th>
+                <th className="text-left py-2.5 px-4 font-medium">Observación</th>
+                <th className="text-right py-2.5 px-4 font-medium">Acciones</th>
+              </tr>
+            </thead>
+            <tbody>
+              {ajustes.map((aj) => (
+                <tr key={aj.id} className="border-b last:border-0 hover:bg-muted/30 cursor-pointer" onClick={() => viewDetail(aj)}>
+                  <td className="py-2.5 px-4">{formatDate(aj.fecha)}</td>
+                  <td className="py-2.5 px-4 text-muted-foreground">{aj.usuario || "—"}</td>
+                  <td className="py-2.5 px-4"><Badge variant="outline">{aj.motivo}</Badge></td>
+                  <td className="py-2.5 px-4 text-muted-foreground text-xs">{aj.observacion || "—"}</td>
+                  <td className="py-2.5 px-4 text-right">
+                    <Badge variant="secondary" className="cursor-pointer">Ver detalle</Badge>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Detail dialog */}
+      {detailAjuste && (
+        <Dialog open={!!detailAjuste} onOpenChange={() => setDetailAjuste(null)}>
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Baja de stock — {formatDate(detailAjuste.fecha)}</DialogTitle>
+            </DialogHeader>
+            <div className="text-sm text-muted-foreground mb-3">
+              <span className="font-medium">{detailAjuste.motivo}</span>
+              {detailAjuste.observacion && <span> · {detailAjuste.observacion}</span>}
+              {detailAjuste.usuario && <span> · {detailAjuste.usuario}</span>}
+            </div>
+            <div className="border rounded-lg overflow-hidden">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-muted/50 border-b text-xs text-muted-foreground">
+                    <th className="text-left py-2 px-3 font-medium">Producto</th>
+                    <th className="text-center py-2 px-3 font-medium">Cant.</th>
+                    <th className="text-right py-2 px-3 font-medium">Stock</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {detailItems.map((item, i) => (
+                    <tr key={i} className="border-b last:border-0">
+                      <td className="py-2 px-3">
+                        <p className="font-medium">{item.producto?.nombre || item.producto_id}</p>
+                        <p className="text-xs text-muted-foreground font-mono">{item.producto?.codigo}</p>
+                      </td>
+                      <td className="py-2 px-3 text-center">
+                        <Badge variant="destructive">-{item.cantidad}</Badge>
+                      </td>
+                      <td className="py-2 px-3 text-right text-xs text-muted-foreground">
+                        {item.stock_antes} → {item.stock_despues}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {/* New ajuste dialog — full screen style */}
+      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <DialogContent className="max-w-5xl max-h-[95vh] flex flex-col p-0 gap-0">
+          <DialogHeader className="px-6 py-4 border-b shrink-0">
+            <DialogTitle className="text-base font-semibold">Bajas de stock</DialogTitle>
+          </DialogHeader>
+
+          {/* Form header */}
+          <div className="px-6 py-3 border-b shrink-0 bg-muted/20">
+            <div className="flex flex-wrap items-end gap-4">
+              <div className="space-y-1">
+                <label className="text-xs text-muted-foreground font-medium">Fecha</label>
+                <Input
+                  type="date"
+                  value={fecha}
+                  onChange={(e) => setFecha(e.target.value)}
+                  className="h-8 w-36 text-sm"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs text-muted-foreground font-medium">Usuario</label>
+                <Input
+                  value={usuario}
+                  onChange={(e) => setUsuario(e.target.value)}
+                  className="h-8 w-40 text-sm"
+                  placeholder="Usuario"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs text-muted-foreground font-medium">Motivo</label>
+                <Select value={motivoGlobal} onValueChange={(v) => {
+                  if (!v) return;
+                  setMotivoGlobal(v);
+                  // If not "por artículo", apply to all rows
+                  if (v !== MOTIVOS_GLOBALES[0]) {
+                    setRows((prev) => prev.map((r) => ({ ...r, motivo: v })));
+                  }
+                }}>
+                  <SelectTrigger className="h-8 w-64 text-sm">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {MOTIVOS_GLOBALES.map((m) => (
+                      <SelectItem key={m} value={m}>{m}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+          </div>
+
+          {/* Table */}
+          <div className="flex-1 overflow-auto">
+            <table className="w-full text-sm border-collapse">
+              <thead className="sticky top-0 bg-muted/80 backdrop-blur z-10">
+                <tr className="border-b">
+                  <th className="text-left py-2 px-3 font-medium text-xs text-muted-foreground w-28">Código</th>
+                  <th className="text-left py-2 px-3 font-medium text-xs text-muted-foreground">Nombre</th>
+                  <th className="text-center py-2 px-3 font-medium text-xs text-muted-foreground w-24">Cantidad</th>
+                  <th className="text-center py-2 px-3 font-medium text-xs text-muted-foreground w-16">Med</th>
+                  <th className="text-right py-2 px-3 font-medium text-xs text-muted-foreground w-28">Costo</th>
+                  <th className="text-right py-2 px-3 font-medium text-xs text-muted-foreground w-28">Subtotal</th>
+                  {motivoGlobal === MOTIVOS_GLOBALES[0] && (
+                    <th className="text-left py-2 px-3 font-medium text-xs text-muted-foreground w-44">Motivo</th>
+                  )}
+                  <th className="text-left py-2 px-3 font-medium text-xs text-muted-foreground">Comentario</th>
+                  <th className="w-8" />
+                </tr>
+              </thead>
+              <tbody>
+                {rows.length === 0 && (
+                  <tr>
+                    <td colSpan={9} className="py-16 text-center text-muted-foreground text-sm">
+                      Presioná <kbd className="border rounded px-1 py-0.5 text-xs bg-muted">F1</kbd> o el botón <strong>Agregar</strong> para agregar productos
+                    </td>
+                  </tr>
+                )}
+                {rows.map((row, idx) => (
+                  <tr
+                    key={row.producto_id + idx}
+                    onClick={() => setSelectedRowIdx(idx)}
+                    className={`border-b cursor-pointer transition-colors ${selectedRowIdx === idx ? "bg-blue-50 dark:bg-blue-950/20" : "hover:bg-muted/30"}`}
+                  >
+                    <td className="py-1 px-3">
+                      <span className="font-mono text-xs text-muted-foreground">{row.codigo}</span>
+                    </td>
+                    <td className="py-1 px-3 font-medium text-sm">{row.nombre}</td>
+                    <td className="py-1 px-3">
+                      <Input
+                        type="number"
+                        min={1}
+                        value={row.cantidad}
+                        onChange={(e) => updateRow(idx, "cantidad", Number(e.target.value))}
+                        onClick={(e) => e.stopPropagation()}
+                        className="h-7 w-full text-center text-sm"
+                      />
+                    </td>
+                    <td className="py-1 px-3 text-center text-xs text-muted-foreground">{row.unidad}</td>
+                    <td className="py-1 px-3">
+                      <Input
+                        type="number"
+                        min={0}
+                        value={row.costo}
+                        onChange={(e) => updateRow(idx, "costo", Number(e.target.value))}
+                        onClick={(e) => e.stopPropagation()}
+                        className="h-7 w-full text-right text-sm"
+                      />
+                    </td>
+                    <td className="py-1 px-3 text-right text-sm font-medium tabular-nums">
+                      {formatCurrency(row.subtotal)}
+                    </td>
+                    {motivoGlobal === MOTIVOS_GLOBALES[0] && (
+                      <td className="py-1 px-3">
+                        <Select
+                          value={row.motivo || MOTIVOS_ITEM[0]}
+                          onValueChange={(v) => v && updateRow(idx, "motivo", v)}
+                        >
+                          <SelectTrigger className="h-7 text-xs" onClick={(e) => e.stopPropagation()}>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {MOTIVOS_ITEM.map((m) => (
+                              <SelectItem key={m} value={m}>{m}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </td>
+                    )}
+                    <td className="py-1 px-3">
+                      <Input
+                        value={row.comentario}
+                        onChange={(e) => updateRow(idx, "comentario", e.target.value)}
+                        onClick={(e) => e.stopPropagation()}
+                        placeholder="Comentario..."
+                        className="h-7 text-sm"
+                      />
+                    </td>
+                    <td className="py-1 px-2">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); removeRow(idx); }}
+                        className="w-6 h-6 flex items-center justify-center rounded hover:bg-red-100 text-muted-foreground hover:text-red-600 transition-colors"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Footer */}
+          <div className="px-6 py-3 border-t bg-muted/20 shrink-0">
+            <div className="flex items-end gap-4">
+              {/* Left: buttons + obs */}
+              <div className="flex items-center gap-2">
+                <Button size="sm" variant="outline" onClick={() => setSearchOpen(true)} className="gap-1.5">
+                  <Plus className="w-3.5 h-3.5" />
+                  Agregar <kbd className="ml-1 border rounded px-1 py-0.5 text-[10px] bg-background">F1</kbd>
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={selectedRowIdx === null}
+                  onClick={() => selectedRowIdx !== null && removeRow(selectedRowIdx)}
+                  className="gap-1.5 text-destructive hover:text-destructive"
+                >
+                  Quitar <kbd className="ml-1 border rounded px-1 py-0.5 text-[10px] bg-background">Supr</kbd>
+                </Button>
+              </div>
+              <div className="flex-1 space-y-1">
+                <label className="text-xs text-muted-foreground font-medium">Obs.</label>
+                <textarea
+                  value={observacion}
+                  onChange={(e) => setObservacion(e.target.value)}
+                  rows={2}
+                  placeholder="Observaciones..."
+                  className="w-full border rounded-md px-2 py-1 text-sm bg-background resize-none outline-none focus:ring-2 focus:ring-ring"
+                />
+              </div>
+              {/* Right: total + actions */}
+              <div className="shrink-0 text-right space-y-2">
+                <div className="flex items-center gap-3">
+                  <span className="text-sm font-semibold">Total</span>
+                  <div className="border rounded-md px-3 py-1 bg-background text-sm font-bold tabular-nums w-36 text-right">
+                    {formatCurrency(total)}
+                  </div>
+                </div>
+                <div className="flex gap-2 justify-end">
+                  <Button variant="outline" size="sm" onClick={() => setDialogOpen(false)}>
+                    Cancelar
+                  </Button>
+                  <Button
+                    size="sm"
+                    onClick={handleSave}
+                    disabled={rows.length === 0 || saving}
+                    className="min-w-[90px]"
+                  >
+                    {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : "Guardar"}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Product search */}
+      <Dialog open={searchOpen} onOpenChange={setSearchOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>Agregar producto</DialogTitle></DialogHeader>
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+            <Input
+              ref={codigoInputRef}
+              placeholder="Buscar por nombre o código..."
+              value={productSearch}
+              onChange={(e) => setProductSearch(e.target.value)}
+              className="pl-9"
+              autoFocus
+            />
+          </div>
+          <div className="space-y-1 max-h-72 overflow-y-auto">
+            {filteredSearch.slice(0, 20).map((p) => (
+              <button
+                key={p.id}
+                onClick={() => addProduct(p)}
+                className="w-full flex items-center justify-between p-2.5 rounded-lg hover:bg-muted transition-colors text-left"
+              >
+                <div>
+                  <p className="text-sm font-medium">{p.nombre}</p>
+                  <p className="text-xs text-muted-foreground font-mono">{p.codigo}</p>
+                </div>
+                <span className="text-xs text-muted-foreground">Stock: {p.stock}</span>
+              </button>
+            ))}
+            {filteredSearch.length === 0 && (
+              <p className="text-center py-6 text-sm text-muted-foreground">Sin resultados</p>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}

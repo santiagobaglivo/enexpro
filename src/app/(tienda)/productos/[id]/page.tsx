@@ -1,0 +1,520 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { useParams } from "next/navigation";
+import Link from "next/link";
+import Image from "next/image";
+import { supabase } from "@/lib/supabase";
+import {
+  Package,
+  Minus,
+  Plus,
+  ChevronRight,
+  ChevronLeft,
+  Layers,
+  Box,
+} from "lucide-react";
+import { showToast } from "@/components/tienda/toast";
+
+interface Producto {
+  id: string;
+  nombre: string;
+  precio: number;
+  imagen_url: string | null;
+  codigo: string;
+  unidad_medida: string;
+  stock: number;
+  categoria_id: string;
+  marca_id: string | null;
+  categorias: { nombre: string } | null;
+  marcas: { nombre: string } | null;
+}
+
+interface Presentacion {
+  id: string;
+  producto_id: string;
+  nombre: string;
+  cantidad: number;
+  precio: number;
+  sku: string;
+}
+
+const formatCurrency = (value: number) =>
+  new Intl.NumberFormat("es-AR", {
+    style: "currency",
+    currency: "ARS",
+    minimumFractionDigits: 0,
+  }).format(value);
+
+export default function ProductoDetallePage() {
+  const { id } = useParams<{ id: string }>();
+
+  const [producto, setProducto] = useState<Producto | null>(null);
+  const [presentaciones, setPresentaciones] = useState<Presentacion[]>([]);
+  const [selectedPresIdx, setSelectedPresIdx] = useState(0);
+  const [cantidad, setCantidad] = useState(1);
+  const [relacionados, setRelacionados] = useState<Producto[]>([]);
+  const [relPresentaciones, setRelPresentaciones] = useState<Record<string, Presentacion[]>>({});
+  const [relSelectedPres, setRelSelectedPres] = useState<Record<string, number>>({});
+  const [relQty, setRelQty] = useState<Record<string, number>>({});
+  const [relScroll, setRelScroll] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [cartQtys, setCartQtys] = useState<Record<string, number>>({});
+
+  // Sync cart quantities
+  useEffect(() => {
+    function syncCart() {
+      const stored = localStorage.getItem("carrito");
+      const carrito: { id: string; cantidad: number }[] = stored ? JSON.parse(stored) : [];
+      const map: Record<string, number> = {};
+      carrito.forEach((item) => map[item.id] = (map[item.id] || 0) + item.cantidad);
+      setCartQtys(map);
+    }
+    syncCart();
+    window.addEventListener("cart-updated", syncCart);
+    return () => window.removeEventListener("cart-updated", syncCart);
+  }, []);
+
+  useEffect(() => {
+    if (!id) return;
+    async function fetchData() {
+      setLoading(true);
+      const { data: prod } = await supabase
+        .from("productos")
+        .select("*, categorias(nombre), marcas(nombre)")
+        .eq("id", id)
+        .single();
+
+      if (prod) {
+        setProducto(prod as Producto);
+        const { data: pres } = await supabase
+          .from("presentaciones")
+          .select("*")
+          .eq("producto_id", id)
+          .order("cantidad");
+        if (pres && pres.length > 0) {
+          setPresentaciones(pres as Presentacion[]);
+          setSelectedPresIdx(0);
+        } else {
+          setPresentaciones([]);
+          setSelectedPresIdx(0);
+        }
+
+        // Fetch related products
+        const { data: rel } = await supabase
+          .from("productos")
+          .select("*, categorias(nombre), marcas(nombre)")
+          .eq("categoria_id", prod.categoria_id)
+          .neq("id", id)
+          .limit(8);
+
+        if (rel && rel.length > 0) {
+          setRelacionados(rel as Producto[]);
+          const ids = rel.map((r: Producto) => r.id);
+          const { data: relPres } = await supabase
+            .from("presentaciones")
+            .select("*")
+            .in("producto_id", ids)
+            .order("cantidad");
+          const map: Record<string, Presentacion[]> = {};
+          (relPres || []).forEach((p: Presentacion) => {
+            if (!map[p.producto_id]) map[p.producto_id] = [];
+            map[p.producto_id].push(p);
+          });
+          setRelPresentaciones(map);
+        }
+      }
+      setLoading(false);
+    }
+    fetchData();
+  }, [id]);
+
+  const currentPres = presentaciones[selectedPresIdx];
+  const currentPrice = currentPres ? currentPres.precio : (producto?.precio ?? 0);
+  const presQty = currentPres ? Number(currentPres.cantidad) : 1;
+  const currentLabel = currentPres
+    ? currentPres.cantidad === 1 ? "Unidad" : `Caja (${currentPres.cantidad} unidades)`
+    : "Unidad";
+
+  // Max qty based on stock and presentation, minus what's already in cart
+  const cartKey = producto ? `${producto.id}_${currentPres ? (currentPres.cantidad === 1 ? "Unidad" : `Caja (x${currentPres.cantidad})`) : "Unidad"}` : "";
+  const inCart = cartQtys[cartKey] || 0;
+  // Total units in cart for this product (all presentations)
+  const totalUnitsInCart = producto ? Object.entries(cartQtys).reduce((sum, [key, qty]) => {
+    if (key.startsWith(producto.id + "_")) {
+      // Figure out units per item from the key
+      const match = key.match(/Caja \(x(\d+)\)/);
+      const units = match ? Number(match[1]) : 1;
+      return sum + qty * units;
+    }
+    return sum;
+  }, 0) : 0;
+  const availableStock = producto ? Math.max(0, producto.stock - totalUnitsInCart) : 0;
+  const maxQty = Math.floor(availableStock / presQty);
+  const canBuy = maxQty > 0;
+
+  const stockLabel = !producto ? "" :
+    !canBuy ? "Sin stock" :
+    maxQty <= 5 ? `Últimas ${presQty > 1 ? maxQty + " cajas" : maxQty + " unidades"}` :
+    "Disponible";
+
+  const stockColor = !producto ? "" :
+    !canBuy ? "text-red-600" :
+    maxQty <= 5 ? "text-orange-500" :
+    "text-green-600";
+
+  function addToCart(prod: Producto, price: number, presLabel: string, qty: number) {
+    const stored = localStorage.getItem("carrito");
+    const carrito: { id: string; nombre: string; precio: number; imagen_url: string | null; cantidad: number; presentacion?: string }[] = stored ? JSON.parse(stored) : [];
+    const cartKey = `${prod.id}_${presLabel}`;
+    const existing = carrito.find((item) => item.id === cartKey);
+    if (existing) {
+      existing.cantidad += qty;
+    } else {
+      carrito.push({
+        id: cartKey,
+        nombre: presLabel !== "Unidad" ? `${prod.nombre} - ${presLabel}` : prod.nombre,
+        precio: price,
+        imagen_url: prod.imagen_url,
+        cantidad: qty,
+        presentacion: presLabel,
+      });
+    }
+    localStorage.setItem("carrito", JSON.stringify(carrito));
+    window.dispatchEvent(new Event("cart-updated"));
+    showToast(`${prod.nombre} se agregó al carrito`);
+  }
+
+  function handleAddToCart() {
+    if (!producto) return;
+    addToCart(producto, currentPrice, currentPres ? (currentPres.cantidad === 1 ? "Unidad" : `Caja (x${currentPres.cantidad})`) : "Unidad", cantidad);
+    setCantidad(1);
+  }
+
+  function getRelPrice(prod: Producto) {
+    const pres = relPresentaciones[prod.id];
+    if (pres && pres.length > 1) {
+      const idx = relSelectedPres[prod.id] ?? 0;
+      return pres[idx]?.precio ?? prod.precio;
+    }
+    return prod.precio;
+  }
+
+  function getRelLabel(prod: Producto) {
+    const pres = relPresentaciones[prod.id];
+    if (pres && pres.length > 1) {
+      const idx = relSelectedPres[prod.id] ?? 0;
+      const p = pres[idx];
+      return p.cantidad === 1 ? "Unidad" : `Caja (x${p.cantidad})`;
+    }
+    return "Unidad";
+  }
+
+  if (loading) {
+    return (
+      <div className="mx-auto max-w-7xl px-4 sm:px-6 py-8">
+        <div className="mb-6 h-5 w-72 animate-pulse rounded bg-gray-100" />
+        <div className="grid gap-10 md:grid-cols-2">
+          <div className="aspect-square w-full animate-pulse rounded-2xl bg-gray-100" />
+          <div className="flex flex-col gap-5">
+            <div className="h-8 w-3/4 animate-pulse rounded-lg bg-gray-100" />
+            <div className="h-10 w-40 animate-pulse rounded-lg bg-gray-100" />
+            <div className="h-14 w-full animate-pulse rounded-xl bg-gray-100" />
+            <div className="h-14 w-full animate-pulse rounded-2xl bg-gray-100" />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!producto) {
+    return (
+      <div className="mx-auto max-w-7xl px-4 sm:px-6 py-8">
+        <div className="flex flex-col items-center justify-center py-24 text-center">
+          <Package className="h-20 w-20 text-gray-200" />
+          <h2 className="mt-6 text-xl font-bold text-gray-800">Producto no encontrado</h2>
+          <Link href="/productos" className="mt-6 inline-flex items-center gap-2 rounded-xl bg-pink-600 px-6 py-3 text-sm font-semibold text-white transition hover:bg-pink-700">
+            Volver a productos
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mx-auto max-w-7xl px-4 sm:px-6 py-6">
+      {/* Breadcrumb */}
+      <nav className="mb-6 flex items-center gap-1.5 text-sm text-gray-400">
+        <Link href="/" className="hover:text-pink-600 transition">Inicio</Link>
+        <ChevronRight className="h-3.5 w-3.5" />
+        <Link href="/productos" className="hover:text-pink-600 transition">Productos</Link>
+        <ChevronRight className="h-3.5 w-3.5" />
+        <span className="text-gray-700 font-medium truncate">{producto.nombre}</span>
+      </nav>
+
+      {/* Main */}
+      <div className="grid gap-10 md:grid-cols-2">
+        {/* Left - Image */}
+        <div className="sticky top-24 self-start">
+          <div className="relative aspect-square overflow-hidden rounded-2xl border border-gray-100 bg-gray-50">
+            {producto.imagen_url ? (
+              <Image
+                src={producto.imagen_url}
+                alt={producto.nombre}
+                fill
+                className="!relative object-contain p-8"
+              />
+            ) : (
+              <div className="flex h-full w-full flex-col items-center justify-center gap-3">
+                <Package className="h-24 w-24 text-gray-200" />
+              </div>
+            )}
+            {producto.stock > 0 && producto.stock <= 10 && (
+              <span className="absolute top-4 left-4 bg-pink-600 text-white text-[11px] font-bold uppercase px-3 py-1 rounded-md">
+                {producto.stock <= 5 ? "Últimas unidades" : "Últimas cajas"}
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Right - Info */}
+        <div className="flex flex-col">
+          <h1 className="text-2xl font-bold text-gray-900 md:text-3xl">
+            {producto.nombre}
+          </h1>
+
+          {/* Price */}
+          <div className="mt-4 border-b border-gray-100 pb-5">
+            <p className="text-3xl font-bold text-gray-900">
+              {formatCurrency(currentPrice)}
+            </p>
+            {currentPres && currentPres.cantidad > 1 && (
+              <p className="text-sm text-gray-500 mt-1">
+                por caja ({currentPres.cantidad} unidades)
+              </p>
+            )}
+          </div>
+
+          {/* Presentaciones */}
+          {presentaciones.length > 0 && (
+            <div className="mt-5">
+              <p className="text-sm font-semibold text-gray-900 mb-3">Presentación</p>
+              <div className="grid grid-cols-2 gap-3">
+                {presentaciones.map((p, idx) => {
+                  const isUnit = Number(p.cantidad) === 1;
+                  const selected = selectedPresIdx === idx;
+                  const presMax = Math.floor(availableStock / Number(p.cantidad));
+                  const disabled = presMax <= 0;
+                  return (
+                    <button
+                      key={p.id}
+                      disabled={disabled}
+                      onClick={() => { setSelectedPresIdx(idx); setCantidad((c) => Math.min(c, Math.max(1, presMax))); }}
+                      className={`flex items-center justify-center gap-2 rounded-xl border-2 py-3.5 px-4 text-sm font-semibold transition-all ${
+                        disabled
+                          ? "border-gray-100 text-gray-300 bg-gray-50 cursor-not-allowed"
+                          : selected
+                          ? "border-pink-600 bg-pink-600 text-white shadow-lg shadow-pink-600/20"
+                          : "border-gray-200 text-gray-700 hover:border-pink-300 bg-white"
+                      }`}
+                    >
+                      {isUnit ? <Layers className="w-4 h-4" /> : <Box className="w-4 h-4" />}
+                      {isUnit ? "Unidad" : `Caja x${p.cantidad}`}
+                      {disabled && <span className="text-[10px] font-normal ml-1">(sin stock)</span>}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Product Info Table */}
+          <div className="mt-6">
+            <p className="text-sm font-semibold text-gray-900 mb-3">Información del producto</p>
+            <div className="space-y-2.5 text-sm">
+              <div className="flex justify-between">
+                <span className="text-gray-500">Categoría:</span>
+                <span className="font-medium text-gray-900">{producto.categorias?.nombre ?? "—"}</span>
+              </div>
+              {producto.marcas?.nombre && (
+                <div className="flex justify-between">
+                  <span className="text-gray-500">Marca:</span>
+                  <span className="font-medium text-gray-900">{producto.marcas.nombre}</span>
+                </div>
+              )}
+              <div className="flex justify-between">
+                <span className="text-gray-500">SKU:</span>
+                <span className="font-medium text-gray-900">{(currentPres?.sku || producto.codigo) || "—"}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-500">Estado:</span>
+                <span className={`font-medium ${stockColor}`}>{stockLabel}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Quantity */}
+          <div className="mt-6">
+            <p className="text-sm font-semibold text-gray-900 mb-3">Cantidad</p>
+            <div className="inline-flex items-center rounded-xl border border-gray-200">
+              <button
+                onClick={() => setCantidad((c) => Math.max(1, c - 1))}
+                disabled={cantidad <= 1}
+                className="flex h-11 w-11 items-center justify-center rounded-l-xl text-gray-500 transition hover:bg-gray-50 disabled:opacity-30"
+              >
+                <Minus className="h-4 w-4" />
+              </button>
+              <span className="flex h-11 w-14 items-center justify-center border-x border-gray-200 text-center font-semibold text-gray-800">
+                {cantidad}
+              </span>
+              <button
+                onClick={() => setCantidad((c) => Math.min(maxQty, c + 1))}
+                disabled={cantidad >= maxQty}
+                className="flex h-11 w-11 items-center justify-center rounded-r-xl text-gray-500 transition hover:bg-gray-50 disabled:opacity-30"
+              >
+                <Plus className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+
+          {/* Add to Cart */}
+          <button
+            onClick={handleAddToCart}
+            disabled={!canBuy}
+            className="mt-6 w-full rounded-2xl bg-pink-600 py-4 text-base font-bold uppercase tracking-wide text-white transition-all hover:bg-pink-700 hover:shadow-xl hover:shadow-pink-600/20 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {canBuy ? "Añadir al carrito" : presQty > 1 ? "Stock insuficiente para esta presentación" : "Sin stock"}
+          </button>
+        </div>
+      </div>
+
+      {/* Related Products */}
+      {relacionados.length > 0 && (
+        <section className="mt-16 mb-8">
+          <div className="flex items-center justify-between mb-6">
+            <h2 className="text-xl font-bold text-gray-900">Productos Relacionados</h2>
+            {relacionados.length > 5 && (
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setRelScroll((s) => Math.max(0, s - 1))}
+                  disabled={relScroll === 0}
+                  className="w-9 h-9 rounded-full border border-gray-200 flex items-center justify-center text-gray-500 hover:bg-gray-50 disabled:opacity-30"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                </button>
+                <button
+                  onClick={() => setRelScroll((s) => Math.min(relacionados.length - 5, s + 1))}
+                  disabled={relScroll >= relacionados.length - 5}
+                  className="w-9 h-9 rounded-full border border-gray-200 flex items-center justify-center text-gray-500 hover:bg-gray-50 disabled:opacity-30"
+                >
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+              </div>
+            )}
+          </div>
+          <div className="overflow-hidden">
+            <div
+              className="flex gap-4 transition-transform duration-300"
+              style={{ transform: `translateX(-${relScroll * (100 / Math.min(5, relacionados.length))}%)` }}
+            >
+              {relacionados.map((rel) => {
+                const pres = relPresentaciones[rel.id];
+                const presIdx = relSelectedPres[rel.id] ?? 0;
+                const price = pres && pres.length > 1 ? (pres[presIdx]?.precio ?? rel.precio) : rel.precio;
+                const qty = relQty[rel.id] ?? 1;
+
+                return (
+                  <div
+                    key={rel.id}
+                    className="flex-shrink-0 w-[calc(20%-12.8px)] min-w-[180px] rounded-2xl border border-gray-100 bg-white overflow-hidden flex flex-col"
+                  >
+                    <Link href={`/productos/${rel.id}`}>
+                      <div className="aspect-square bg-gray-100 overflow-hidden relative">
+                        {rel.imagen_url ? (
+                          <Image
+                            src={rel.imagen_url}
+                            alt={rel.nombre}
+                            fill
+                            className="object-contain p-4"
+                          />
+                        ) : (
+                          <div className="flex h-full w-full items-center justify-center text-gray-300 text-xs">
+                            Sin imagen
+                          </div>
+                        )}
+                      </div>
+                    </Link>
+                    <div className="p-3 flex-1 flex flex-col">
+                      <p className="text-[11px] text-gray-400 uppercase font-medium tracking-wide">
+                        {rel.categorias?.nombre ?? ""}
+                      </p>
+                      <Link href={`/productos/${rel.id}`}>
+                        <p className="text-sm font-medium text-gray-800 line-clamp-2 min-h-[2.5rem] mt-0.5">
+                          {rel.nombre}
+                        </p>
+                      </Link>
+                      <p className="text-base font-bold text-gray-900 mt-1">
+                        {formatCurrency(price)}
+                      </p>
+
+                      {/* Presentacion pills */}
+                      {pres && pres.length > 1 && (
+                        <div className="flex gap-1.5 mt-2">
+                          {pres.map((pr, idx) => {
+                            const isActive = presIdx === idx;
+                            const label = pr.cantidad === 1 ? "Unidad" : `Caja (x${pr.cantidad})`;
+                            return (
+                              <button
+                                key={idx}
+                                onClick={() => setRelSelectedPres((prev) => ({ ...prev, [rel.id]: idx }))}
+                                className={`px-2.5 py-1 rounded-full text-[11px] font-medium transition-all border ${
+                                  isActive
+                                    ? "bg-pink-600 text-white border-pink-600"
+                                    : "bg-white text-gray-600 border-gray-200 hover:border-pink-300"
+                                }`}
+                              >
+                                {label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+
+                      {/* Qty + Add */}
+                      <div className="mt-auto pt-3 flex items-center gap-1.5">
+                        <div className="flex items-center border border-gray-200 rounded-lg overflow-hidden">
+                          <button
+                            onClick={() => setRelQty((prev) => ({ ...prev, [rel.id]: Math.max(1, (prev[rel.id] ?? 1) - 1) }))}
+                            className="w-8 h-8 flex items-center justify-center text-gray-500 hover:bg-gray-50"
+                          >
+                            <Minus className="w-3 h-3" />
+                          </button>
+                          <span className="w-7 text-center text-xs font-medium">{qty}</span>
+                          <button
+                            onClick={() => setRelQty((prev) => ({ ...prev, [rel.id]: (prev[rel.id] ?? 1) + 1 }))}
+                            className="w-8 h-8 flex items-center justify-center text-gray-500 hover:bg-gray-50"
+                          >
+                            <Plus className="w-3 h-3" />
+                          </button>
+                        </div>
+                        <button
+                          onClick={() => {
+                            addToCart(rel, price, getRelLabel(rel), qty);
+                            setRelQty((prev) => ({ ...prev, [rel.id]: 1 }));
+                          }}
+                          className="flex-1 bg-pink-600 hover:bg-pink-700 text-white text-xs py-2 rounded-lg font-semibold transition-colors"
+                        >
+                          Agregar {formatCurrency(price * qty)}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </section>
+      )}
+    </div>
+  );
+}

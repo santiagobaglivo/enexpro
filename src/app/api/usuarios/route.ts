@@ -1,0 +1,98 @@
+import { createClient } from "@supabase/supabase-js";
+import { NextRequest, NextResponse } from "next/server";
+
+const supabaseAdmin = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
+
+export async function POST(req: NextRequest) {
+  try {
+    const body = await req.json();
+    const { nombre, email, password, rol_id, es_admin } = body;
+
+    if (!nombre || !email || !password) {
+      return NextResponse.json(
+        { error: "Nombre, email y contraseña son requeridos" },
+        { status: 400 }
+      );
+    }
+
+    // Create user in Supabase Auth
+    const { data: authData, error: authError } =
+      await supabaseAdmin.auth.admin.createUser({
+        email,
+        password,
+        email_confirm: true,
+      });
+
+    if (authError) {
+      return NextResponse.json(
+        { error: authError.message },
+        { status: 400 }
+      );
+    }
+
+    // Create user in usuarios table
+    const { data: usuario, error: dbError } = await supabaseAdmin
+      .from("usuarios")
+      .insert({
+        nombre,
+        email,
+        auth_id: authData.user.id,
+        rol_id: rol_id || null,
+        es_admin: es_admin ?? false,
+        activo: true,
+      })
+      .select()
+      .single();
+
+    if (dbError) {
+      // Rollback: delete auth user if db insert fails
+      await supabaseAdmin.auth.admin.deleteUser(authData.user.id);
+      return NextResponse.json(
+        { error: dbError.message },
+        { status: 400 }
+      );
+    }
+
+    return NextResponse.json({ usuario });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : "Error interno";
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
+}
+
+export async function DELETE(req: NextRequest) {
+  try {
+    const { searchParams } = new URL(req.url);
+    const id = searchParams.get("id");
+    const auth_id = searchParams.get("auth_id");
+
+    if (!id) {
+      return NextResponse.json({ error: "ID requerido" }, { status: 400 });
+    }
+
+    // Deactivate in usuarios table
+    const { error: dbError } = await supabaseAdmin
+      .from("usuarios")
+      .update({ activo: false })
+      .eq("id", id);
+
+    if (dbError) {
+      return NextResponse.json({ error: dbError.message }, { status: 400 });
+    }
+
+    // Optionally disable auth user
+    if (auth_id) {
+      await supabaseAdmin.auth.admin.updateUserById(auth_id, {
+        ban_duration: "876600h", // ~100 years
+      });
+    }
+
+    return NextResponse.json({ success: true });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : "Error interno";
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
+}
