@@ -36,7 +36,10 @@ import {
   Loader2,
   FileMinus,
   RotateCcw,
-  AlertTriangle,
+  Banknote,
+  ArrowRightLeft,
+  Wallet,
+  Eye,
 } from "lucide-react";
 
 interface LineItem {
@@ -45,18 +48,26 @@ interface LineItem {
   code: string;
   description: string;
   qty: number;
-  maxQty: number; // max returnable (original - already returned)
+  maxQty: number;
   unit: string;
   price: number;
   subtotal: number;
   presentacion: string;
   unidades_por_presentacion: number;
-  alreadyReturned: boolean; // fully returned already
+  alreadyReturned: boolean;
 }
 
 interface NotaCreditoRow extends Venta {
   clientes?: { nombre: string } | null;
 }
+
+interface NCDetail {
+  nc: NotaCreditoRow;
+  items: any[];
+  movimientos: any[];
+}
+
+type MetodoDev = "Efectivo" | "Transferencia" | "Cuenta Corriente";
 
 function formatCurrency(value: number) {
   return new Intl.NumberFormat("es-AR", {
@@ -71,12 +82,20 @@ function getTipoFactura(cliente: Cliente | undefined): string {
   return cliente.tipo_factura;
 }
 
+const METODOS_DEV: { value: MetodoDev; label: string; icon: React.ElementType }[] = [
+  { value: "Efectivo", label: "Efectivo", icon: Banknote },
+  { value: "Transferencia", label: "Transferencia", icon: ArrowRightLeft },
+  { value: "Cuenta Corriente", label: "Descontar de Cta. Cte.", icon: Wallet },
+];
+
 export default function NotaCreditoPage() {
   const [tab, setTab] = useState("listado");
 
   // List state
   const [notas, setNotas] = useState<NotaCreditoRow[]>([]);
   const [loadingList, setLoadingList] = useState(true);
+  const [ncDetail, setNcDetail] = useState<NCDetail | null>(null);
+  const [loadingDetail, setLoadingDetail] = useState(false);
 
   // Form state
   const [clients, setClients] = useState<Cliente[]>([]);
@@ -88,6 +107,7 @@ export default function NotaCreditoPage() {
   const [clientVentas, setClientVentas] = useState<Venta[]>([]);
   const [items, setItems] = useState<LineItem[]>([]);
   const [observacion, setObservacion] = useState("");
+  const [metodoDev, setMetodoDev] = useState<MetodoDev>("Efectivo");
   const [saving, setSaving] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [productSearch, setProductSearch] = useState("");
@@ -116,11 +136,13 @@ export default function NotaCreditoPage() {
     ]);
     setClients(cls || []);
     setProducts(prods || []);
-    // Load presentaciones for code search
     const { data: allPres } = await supabase.from("presentaciones").select("producto_id, sku");
     if (allPres) {
       const map: Record<string, { codigo: string }[]> = {};
-      for (const pr of allPres) { if (!map[pr.producto_id]) map[pr.producto_id] = []; map[pr.producto_id].push({ codigo: pr.sku || "" }); }
+      for (const pr of allPres) {
+        if (!map[pr.producto_id]) map[pr.producto_id] = [];
+        map[pr.producto_id].push({ codigo: pr.sku || "" });
+      }
       setPresMap(map);
     }
   }, []);
@@ -150,13 +172,10 @@ export default function NotaCreditoPage() {
     })();
   }, [clientId]);
 
-  // When origin comprobante changes, load its items and check already returned
+  // When origin comprobante changes, load its items
   useEffect(() => {
-    if (!origenId || origenId === "none") {
-      return;
-    }
+    if (!origenId || origenId === "none") return;
     (async () => {
-      // 1. Load original items
       const { data: origItems } = await supabase
         .from("venta_items")
         .select("producto_id, codigo, descripcion, cantidad, unidad_medida, precio_unitario, subtotal, presentacion, unidades_por_presentacion")
@@ -164,15 +183,13 @@ export default function NotaCreditoPage() {
 
       if (!origItems || origItems.length === 0) return;
 
-      // 2. Find all existing NCs for the same origin
       const { data: existingNCs } = await supabase
         .from("ventas")
         .select("id")
         .eq("remito_origen_id", origenId)
         .ilike("tipo_comprobante", "Nota de Crédito%");
 
-      // 3. Get items already returned in those NCs
-      const returnedMap: Record<string, number> = {}; // producto_id+descripcion -> qty returned
+      const returnedMap: Record<string, number> = {};
       if (existingNCs && existingNCs.length > 0) {
         const ncIds = existingNCs.map((nc: any) => nc.id);
         const { data: ncItems } = await supabase
@@ -187,34 +204,48 @@ export default function NotaCreditoPage() {
         }
       }
 
-      // 4. Build items with remaining qty
       const loaded: LineItem[] = [];
       for (const item of origItems) {
         const key = `${item.producto_id || ""}|${item.descripcion}`;
         const alreadyReturnedQty = returnedMap[key] || 0;
         const remaining = (item.cantidad || 0) - alreadyReturnedQty;
-        const fullyReturned = remaining <= 0;
-
+        if (remaining <= 0) continue;
         loaded.push({
           id: crypto.randomUUID(),
           producto_id: item.producto_id,
           code: item.codigo || "-",
           description: item.descripcion,
           qty: 0,
-          maxQty: fullyReturned ? 0 : remaining,
+          maxQty: remaining,
           unit: item.unidad_medida || "UN",
           price: item.precio_unitario,
           subtotal: 0,
           presentacion: item.presentacion || "Unidad",
           unidades_por_presentacion: item.unidades_por_presentacion || 1,
-          alreadyReturned: fullyReturned,
+          alreadyReturned: false,
         });
       }
+      setItems(loaded);
 
-      // Only set items that still have remaining qty
-      setItems(loaded.filter((i) => !i.alreadyReturned));
+      // Suggest payment method from origin sale
+      const origenVenta = clientVentas.find((v) => v.id === origenId);
+      if (origenVenta?.forma_pago && origenVenta.forma_pago !== "Mixto") {
+        setMetodoDev(origenVenta.forma_pago as MetodoDev);
+      }
     })();
   }, [origenId]);
+
+  // Open NC detail
+  const openDetail = async (nc: NotaCreditoRow) => {
+    setLoadingDetail(true);
+    setNcDetail({ nc, items: [], movimientos: [] });
+    const [{ data: ncItems }, { data: movs }] = await Promise.all([
+      supabase.from("venta_items").select("*").eq("venta_id", nc.id).order("id"),
+      supabase.from("caja_movimientos").select("*").eq("referencia_id", nc.id).order("created_at"),
+    ]);
+    setNcDetail({ nc, items: ncItems || [], movimientos: movs || [] });
+    setLoadingDetail(false);
+  };
 
   const selectedClient = clients.find((c) => c.id === clientId);
 
@@ -232,31 +263,24 @@ export default function NotaCreditoPage() {
   const addItem = (product: Producto) => {
     const existing = items.find((i) => i.producto_id === product.id);
     if (existing) {
-      setItems(
-        items.map((i) =>
-          i.id === existing.id
-            ? { ...i, qty: i.qty + 1, subtotal: i.price * (i.qty + 1) }
-            : i
-        )
-      );
+      setItems(items.map((i) =>
+        i.id === existing.id ? { ...i, qty: i.qty + 1, subtotal: i.price * (i.qty + 1) } : i
+      ));
     } else {
-      setItems([
-        ...items,
-        {
-          id: crypto.randomUUID(),
-          producto_id: product.id,
-          code: product.codigo,
-          description: product.nombre,
-          qty: 1,
-          maxQty: 9999,
-          unit: product.unidad_medida,
-          price: product.precio,
-          subtotal: product.precio,
-          presentacion: "Unidad",
-          unidades_por_presentacion: 1,
-          alreadyReturned: false,
-        },
-      ]);
+      setItems([...items, {
+        id: crypto.randomUUID(),
+        producto_id: product.id,
+        code: product.codigo,
+        description: product.nombre,
+        qty: 1,
+        maxQty: 9999,
+        unit: product.unidad_medida,
+        price: product.precio,
+        subtotal: product.precio,
+        presentacion: "Unidad",
+        unidades_por_presentacion: 1,
+        alreadyReturned: false,
+      }]);
     }
     setSearchOpen(false);
     setProductSearch("");
@@ -264,23 +288,20 @@ export default function NotaCreditoPage() {
 
   const addFreeItem = () => {
     if (!freeDesc.trim() || freePrice <= 0) return;
-    setItems([
-      ...items,
-      {
-        id: crypto.randomUUID(),
-        producto_id: null,
-        code: "-",
-        description: freeDesc,
-        qty: freeQty,
-        maxQty: 9999,
-        unit: "UN",
-        price: freePrice,
-        subtotal: freePrice * freeQty,
-        presentacion: "Unidad",
-        unidades_por_presentacion: 1,
-        alreadyReturned: false,
-      },
-    ]);
+    setItems([...items, {
+      id: crypto.randomUUID(),
+      producto_id: null,
+      code: "-",
+      description: freeDesc,
+      qty: freeQty,
+      maxQty: 9999,
+      unit: "UN",
+      price: freePrice,
+      subtotal: freePrice * freeQty,
+      presentacion: "Unidad",
+      unidades_por_presentacion: 1,
+      alreadyReturned: false,
+    }]);
     setFreeDesc("");
     setFreePrice(0);
     setFreeQty(1);
@@ -291,21 +312,15 @@ export default function NotaCreditoPage() {
 
   const updateQty = (id: string, qty: number) => {
     if (qty < 1) return;
-    setItems(
-      items.map((i) => {
-        if (i.id !== id) return i;
-        const clampedQty = Math.min(qty, i.maxQty);
-        return { ...i, qty: clampedQty, subtotal: i.price * clampedQty };
-      })
-    );
+    setItems(items.map((i) => {
+      if (i.id !== id) return i;
+      const clampedQty = Math.min(qty, i.maxQty);
+      return { ...i, qty: clampedQty, subtotal: i.price * clampedQty };
+    }));
   };
 
   const updatePrice = (id: string, price: number) => {
-    setItems(
-      items.map((i) =>
-        i.id === id ? { ...i, price, subtotal: price * i.qty } : i
-      )
-    );
+    setItems(items.map((i) => i.id === id ? { ...i, price, subtotal: price * i.qty } : i));
   };
 
   const total = items.reduce((acc, i) => acc + i.subtotal, 0);
@@ -317,12 +332,11 @@ export default function NotaCreditoPage() {
     const letra = getTipoFactura(selectedClient);
     const tipoComprobante = `Nota de Crédito ${letra}`;
 
-    const { data: numData } = await supabase.rpc("next_numero", {
-      p_tipo: "nota_credito",
-    });
+    const { data: numData } = await supabase.rpc("next_numero", { p_tipo: "nota_credito" });
     const numero = numData || "00001-00000000";
 
     const hoy = new Date().toISOString().split("T")[0];
+    const hora = new Date().toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit", hour12: false });
 
     const { data: venta } = await supabase
       .from("ventas")
@@ -332,22 +346,24 @@ export default function NotaCreditoPage() {
         fecha: hoy,
         cliente_id: clientId,
         vendedor_id: null,
-        forma_pago: "Cuenta Corriente",
+        forma_pago: metodoDev,
         subtotal: total,
         descuento_porcentaje: 0,
         recargo_porcentaje: 0,
         total,
         estado: "cerrada",
-        entregado: true, // NCs don't need delivery
+        entregado: true,
         observacion: observacion || null,
         remito_origen_id: origenId && origenId !== "none" ? origenId : null,
       })
       .select()
       .single();
 
-    if (venta) {
-      // Insert items with presentation info
-      const ventaItems = items.map((i) => ({
+    if (!venta) { setSaving(false); return; }
+
+    // Insert items
+    await supabase.from("venta_items").insert(
+      items.map((i) => ({
         venta_id: venta.id,
         producto_id: i.producto_id,
         codigo: i.code,
@@ -359,147 +375,112 @@ export default function NotaCreditoPage() {
         subtotal: i.subtotal,
         presentacion: i.presentacion,
         unidades_por_presentacion: i.unidades_por_presentacion,
-      }));
-      await supabase.from("venta_items").insert(ventaItems);
+      }))
+    );
 
-      // Re-add stock for returned products using unidades_por_presentacion
-      for (const item of items) {
-        if (item.producto_id) {
-          const prod = products.find((p) => p.id === item.producto_id);
-          if (prod) {
-            const unitsToReturn = item.qty * (item.unidades_por_presentacion || 1);
-            const newStock = prod.stock + unitsToReturn;
-            await supabase
-              .from("productos")
-              .update({ stock: newStock })
-              .eq("id", item.producto_id);
-            await supabase.from("stock_movimientos").insert({
-              producto_id: item.producto_id,
-              tipo: "devolucion",
-              cantidad_antes: prod.stock,
-              cantidad_despues: newStock,
-              cantidad: unitsToReturn,
-              referencia: `Nota de Crédito: ${numero}`,
-              descripcion: `Devolucion - ${item.description}`,
-              usuario: "Admin Sistema",
-              orden_id: venta.id,
-            });
-          }
+    // Re-add stock
+    for (const item of items) {
+      if (item.producto_id) {
+        const prod = products.find((p) => p.id === item.producto_id);
+        if (prod) {
+          const unitsToReturn = item.qty * (item.unidades_por_presentacion || 1);
+          const newStock = prod.stock + unitsToReturn;
+          await supabase.from("productos").update({ stock: newStock }).eq("id", item.producto_id);
+          await supabase.from("stock_movimientos").insert({
+            producto_id: item.producto_id,
+            tipo: "devolucion",
+            cantidad_antes: prod.stock,
+            cantidad_despues: newStock,
+            cantidad: unitsToReturn,
+            referencia: `Nota de Crédito: ${numero}`,
+            descripcion: `Devolución - ${item.description}`,
+            usuario: "Admin Sistema",
+            orden_id: venta.id,
+          });
         }
       }
+    }
 
-      // Determine original payment method from the origin sale
-      let formaPagoOriginal = "Cuenta Corriente";
-      if (origenId && origenId !== "none") {
-        const origenVenta = clientVentas.find((v) => v.id === origenId);
-        if (origenVenta?.forma_pago) {
-          formaPagoOriginal = origenVenta.forma_pago;
-        }
-      }
-
-      // Register egreso in caja_movimientos (reverse the payment)
-      const hora = new Date().toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" });
+    // ── Impacto en caja según método de devolución ──
+    if (metodoDev === "Efectivo" || metodoDev === "Transferencia") {
+      // Egreso de caja: dinero que sale hacia el cliente
       await supabase.from("caja_movimientos").insert({
         fecha: hoy,
         hora,
         tipo: "egreso",
-        descripcion: `Nota de Crédito #${numero}`,
-        metodo_pago: formaPagoOriginal,
+        descripcion: `Devolución NC #${numero} — ${selectedClient?.nombre || ""}`,
+        metodo_pago: metodoDev,
         monto: total,
         referencia_id: venta.id,
         referencia_tipo: "nota_credito",
       });
-
-      // Register haber in cuenta_corriente (credit to client)
-      const nuevoSaldo = (selectedClient?.saldo || 0) - total;
-      await supabase.from("cuenta_corriente").insert({
-        cliente_id: clientId,
-        fecha: hoy,
-        comprobante: `NC ${numero}`,
-        descripcion: `Nota de Crédito ${numero}`,
-        debe: 0,
-        haber: total,
-        saldo: nuevoSaldo,
-        forma_pago: formaPagoOriginal,
-        venta_id: venta.id,
-      });
-
-      // Update client saldo (can go negative = saldo a favor)
-      await supabase
-        .from("clientes")
-        .update({ saldo: nuevoSaldo })
-        .eq("id", clientId);
-
-      // Reset form
-      setItems([]);
-      setObservacion("");
-      setOrigenId("");
-      setClientId("");
-      setClientSearch("");
-      setTab("listado");
-      fetchNotas();
-      fetchFormData();
-
-      const saldoMsg = nuevoSaldo < 0
-        ? ` — Saldo a favor del cliente: ${formatCurrency(Math.abs(nuevoSaldo))}`
-        : nuevoSaldo > 0
-        ? ` — Deuda restante: ${formatCurrency(nuevoSaldo)}`
-        : " — Deuda saldada";
-      setSuccessMsg(`Nota de Crédito ${numero} creada por ${formatCurrency(total)}${saldoMsg}`);
     }
+    // Si es Cuenta Corriente: no sale dinero, solo se acredita en CC
+
+    // ── Cuenta corriente: siempre registrar el haber ──
+    const nuevoSaldo = (selectedClient?.saldo || 0) - total;
+    await supabase.from("cuenta_corriente").insert({
+      cliente_id: clientId,
+      fecha: hoy,
+      comprobante: `NC ${numero}`,
+      descripcion: `Nota de Crédito ${numero} — devolución via ${metodoDev}`,
+      debe: 0,
+      haber: total,
+      saldo: nuevoSaldo,
+      forma_pago: metodoDev,
+      venta_id: venta.id,
+    });
+
+    await supabase.from("clientes").update({ saldo: nuevoSaldo }).eq("id", clientId);
+
+    // Reset form
+    setItems([]);
+    setObservacion("");
+    setOrigenId("");
+    setClientId("");
+    setClientSearch("");
+    setMetodoDev("Efectivo");
+    setTab("listado");
+    fetchNotas();
+    fetchFormData();
+
+    const saldoMsg = nuevoSaldo < 0
+      ? ` — Saldo a favor: ${formatCurrency(Math.abs(nuevoSaldo))}`
+      : nuevoSaldo > 0
+      ? ` — Deuda restante: ${formatCurrency(nuevoSaldo)}`
+      : " — Deuda saldada";
+    setSuccessMsg(`NC ${numero} emitida por ${formatCurrency(total)} via ${metodoDev}${saldoMsg}`);
 
     setSaving(false);
   };
 
-  // Stats
   const totalNC = notas.reduce((acc, n) => acc + n.total, 0);
-  const countMes = notas.filter(
-    (n) => n.fecha >= new Date().toISOString().slice(0, 7)
-  ).length;
+  const countMes = notas.filter((n) => n.fecha >= new Date().toISOString().slice(0, 7)).length;
 
   return (
     <div className="p-6 lg:p-8 space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Notas de Crédito</h1>
-          <p className="text-muted-foreground text-sm">
-            Crear y consultar notas de crédito
-          </p>
+          <p className="text-muted-foreground text-sm">Crear y consultar notas de crédito</p>
         </div>
-        <Badge variant="outline">
-          <FileMinus className="w-3.5 h-3.5 mr-1" />
-          NC
-        </Badge>
+        <Badge variant="outline"><FileMinus className="w-3.5 h-3.5 mr-1" />NC</Badge>
       </div>
 
       {/* Stats */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <Card>
-          <CardContent className="pt-6">
-            <p className="text-sm text-muted-foreground">Total NC emitidas</p>
-            <p className="text-2xl font-bold">{notas.length}</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-6">
-            <p className="text-sm text-muted-foreground">Monto total NC</p>
-            <p className="text-2xl font-bold">{formatCurrency(totalNC)}</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-6">
-            <p className="text-sm text-muted-foreground">NC este mes</p>
-            <p className="text-2xl font-bold">{countMes}</p>
-          </CardContent>
-        </Card>
+        <Card><CardContent className="pt-6"><p className="text-sm text-muted-foreground">Total NC emitidas</p><p className="text-2xl font-bold">{notas.length}</p></CardContent></Card>
+        <Card><CardContent className="pt-6"><p className="text-sm text-muted-foreground">Monto total NC</p><p className="text-2xl font-bold">{formatCurrency(totalNC)}</p></CardContent></Card>
+        <Card><CardContent className="pt-6"><p className="text-sm text-muted-foreground">NC este mes</p><p className="text-2xl font-bold">{countMes}</p></CardContent></Card>
       </div>
 
-      <Tabs value={tab} onValueChange={(v) => setTab(v ?? "list")}>
+      <Tabs value={tab} onValueChange={(v) => setTab(v ?? "listado")}>
         <TabsList>
           <TabsTrigger value="listado">Listado</TabsTrigger>
           <TabsTrigger value="nueva">Nueva Nota de Crédito</TabsTrigger>
         </TabsList>
 
+        {/* ── LISTADO ── */}
         <TabsContent value="listado" className="space-y-4">
           <Card>
             <CardContent className="pt-6">
@@ -521,24 +502,32 @@ export default function NotaCreditoPage() {
                         <th className="text-left py-2 px-3 font-medium">Fecha</th>
                         <th className="text-left py-2 px-3 font-medium">Tipo</th>
                         <th className="text-left py-2 px-3 font-medium">Cliente</th>
+                        <th className="text-left py-2 px-3 font-medium">Devolución vía</th>
                         <th className="text-right py-2 px-3 font-medium">Total</th>
-                        <th className="text-left py-2 px-3 font-medium">Observación</th>
+                        <th className="w-10"></th>
                       </tr>
                     </thead>
                     <tbody>
                       {notas.map((n) => (
-                        <tr key={n.id} className="border-b last:border-0 hover:bg-muted/50">
+                        <tr
+                          key={n.id}
+                          className="border-b last:border-0 hover:bg-muted/50 cursor-pointer"
+                          onClick={() => openDetail(n)}
+                        >
                           <td className="py-2 px-3 font-mono text-xs">{n.numero}</td>
                           <td className="py-2 px-3">{n.fecha}</td>
                           <td className="py-2 px-3">
-                            <Badge variant="secondary">{n.tipo_comprobante}</Badge>
+                            <Badge variant="secondary" className="text-xs">{n.tipo_comprobante}</Badge>
                           </td>
                           <td className="py-2 px-3">{n.clientes?.nombre || "-"}</td>
-                          <td className="py-2 px-3 text-right font-semibold">
-                            {formatCurrency(n.total)}
+                          <td className="py-2 px-3">
+                            <Badge variant="outline" className="text-xs">{n.forma_pago || "-"}</Badge>
                           </td>
-                          <td className="py-2 px-3 text-muted-foreground text-xs max-w-[200px] truncate">
-                            {n.observacion || "-"}
+                          <td className="py-2 px-3 text-right font-semibold text-red-500">
+                            -{formatCurrency(n.total)}
+                          </td>
+                          <td className="py-2 px-3">
+                            <Eye className="w-3.5 h-3.5 text-muted-foreground" />
                           </td>
                         </tr>
                       ))}
@@ -550,6 +539,7 @@ export default function NotaCreditoPage() {
           </Card>
         </TabsContent>
 
+        {/* ── NUEVA NC ── */}
         <TabsContent value="nueva" className="space-y-4">
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2 space-y-4">
@@ -566,52 +556,31 @@ export default function NotaCreditoPage() {
                           value={clientSearch}
                           onChange={(e) => {
                             setClientSearch(e.target.value);
-                            if (clientId) {
-                              setClientId("");
-                              setOrigenId("");
-                              setItems([]);
-                            }
+                            if (clientId) { setClientId(""); setOrigenId(""); setItems([]); }
                           }}
                           className="pl-9"
                         />
                         {!clientId && clientSearch.length > 0 && (
                           <div className="absolute z-50 w-full mt-1 bg-background border rounded-lg shadow-lg max-h-[200px] overflow-y-auto">
                             {filteredClients.slice(0, 10).map((c) => (
-                              <button
-                                key={c.id}
-                                className="w-full text-left px-3 py-2 hover:bg-muted text-sm transition-colors"
-                                onClick={() => {
-                                  setClientId(c.id);
-                                  setClientSearch(c.nombre);
-                                }}
-                              >
+                              <button key={c.id} className="w-full text-left px-3 py-2 hover:bg-muted text-sm transition-colors"
+                                onClick={() => { setClientId(c.id); setClientSearch(c.nombre); }}>
                                 {c.nombre}
                               </button>
                             ))}
-                            {filteredClients.length === 0 && (
-                              <p className="px-3 py-2 text-sm text-muted-foreground">Sin resultados</p>
-                            )}
+                            {filteredClients.length === 0 && <p className="px-3 py-2 text-sm text-muted-foreground">Sin resultados</p>}
                           </div>
                         )}
                         {clientId && (
-                          <button
-                            className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                            onClick={() => {
-                              setClientId("");
-                              setClientSearch("");
-                              setOrigenId("");
-                              setItems([]);
-                            }}
-                          >
+                          <button className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                            onClick={() => { setClientId(""); setClientSearch(""); setOrigenId(""); setItems([]); }}>
                             <X className="w-4 h-4" />
                           </button>
                         )}
                       </div>
                     </div>
                     <div className="space-y-2">
-                      <Label className="text-xs text-muted-foreground">
-                        Comprobante de origen (opcional)
-                      </Label>
+                      <Label className="text-xs text-muted-foreground">Comprobante de origen (opcional)</Label>
                       <Select value={origenId} onValueChange={(v) => { setOrigenId(v || ""); setItems([]); }}>
                         <SelectTrigger>
                           <SelectValue placeholder="Sin referencia" />
@@ -620,7 +589,7 @@ export default function NotaCreditoPage() {
                           <SelectItem value="none">Sin referencia</SelectItem>
                           {clientVentas.map((v) => (
                             <SelectItem key={v.id} value={v.id}>
-                              {v.tipo_comprobante} {v.numero} - {formatCurrency(v.total)}
+                              {v.tipo_comprobante} {v.numero} — {formatCurrency(v.total)} ({v.forma_pago})
                             </SelectItem>
                           ))}
                         </SelectContent>
@@ -632,7 +601,9 @@ export default function NotaCreditoPage() {
                       <span>CUIT: {selectedClient.cuit || "-"}</span>
                       <span>IVA: {selectedClient.situacion_iva}</span>
                       <span>Factura: {selectedClient.tipo_factura || "B"}</span>
-                      <span>Saldo: {formatCurrency(selectedClient.saldo)}</span>
+                      <span className={selectedClient.saldo > 0 ? "text-red-500" : selectedClient.saldo < 0 ? "text-emerald-500" : ""}>
+                        Saldo: {formatCurrency(selectedClient.saldo)}
+                      </span>
                     </div>
                   )}
                 </CardContent>
@@ -644,18 +615,12 @@ export default function NotaCreditoPage() {
                   <div className="flex items-center justify-between">
                     <CardTitle className="text-base">Items a devolver</CardTitle>
                     <div className="flex gap-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setFreeText(true)}
-                      >
-                        <FileText className="w-4 h-4 mr-2" />
-                        Texto libre
+                      <Button variant="outline" size="sm" onClick={() => setFreeText(true)}>
+                        <FileText className="w-4 h-4 mr-2" />Texto libre
                       </Button>
                       {(!origenId || origenId === "none") && (
                         <Button size="sm" onClick={() => setSearchOpen(true)}>
-                          <Plus className="w-4 h-4 mr-2" />
-                          Agregar producto
+                          <Plus className="w-4 h-4 mr-2" />Agregar producto
                         </Button>
                       )}
                     </div>
@@ -669,7 +634,7 @@ export default function NotaCreditoPage() {
                       <p className="text-xs mt-1">
                         {origenId && origenId !== "none"
                           ? "Todos los productos de este comprobante ya fueron devueltos"
-                          : "Seleccione un comprobante de origen o agregue productos manualmente"}
+                          : "Seleccione un comprobante o agregue productos manualmente"}
                       </p>
                     </div>
                   ) : (
@@ -688,45 +653,22 @@ export default function NotaCreditoPage() {
                         <tbody>
                           {items.map((item) => (
                             <tr key={item.id} className="border-b last:border-0">
-                              <td className="py-2 px-3 font-mono text-xs text-muted-foreground">
-                                {item.code}
+                              <td className="py-2 px-3 font-mono text-xs text-muted-foreground">{item.code}</td>
+                              <td className="py-2 px-3 font-medium">{item.description}</td>
+                              <td className="py-2 px-3">
+                                <Input type="number" value={item.qty}
+                                  onChange={(e) => updateQty(item.id, Number(e.target.value))}
+                                  className="w-16 text-center h-8 mx-auto" min={1} max={item.maxQty} />
                               </td>
                               <td className="py-2 px-3">
-                                <p className="font-medium">{item.description}</p>
+                                <Input type="number" value={item.price}
+                                  onChange={(e) => updatePrice(item.id, Number(e.target.value))}
+                                  className="w-24 text-right h-8 ml-auto" min={0} />
                               </td>
-                              <td className="py-2 px-3">
-                                <Input
-                                  type="number"
-                                  value={item.qty}
-                                  onChange={(e) =>
-                                    updateQty(item.id, Number(e.target.value))
-                                  }
-                                  className="w-16 text-center h-8 mx-auto"
-                                  min={1}
-                                  max={item.maxQty}
-                                />
-                              </td>
-                              <td className="py-2 px-3">
-                                <Input
-                                  type="number"
-                                  value={item.price}
-                                  onChange={(e) =>
-                                    updatePrice(item.id, Number(e.target.value))
-                                  }
-                                  className="w-24 text-right h-8 ml-auto"
-                                  min={0}
-                                />
-                              </td>
-                              <td className="py-2 px-3 text-right font-semibold">
-                                {formatCurrency(item.subtotal)}
-                              </td>
+                              <td className="py-2 px-3 text-right font-semibold">{formatCurrency(item.subtotal)}</td>
                               <td className="py-2 px-1">
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                                  onClick={() => removeItem(item.id)}
-                                >
+                                <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                                  onClick={() => removeItem(item.id)}>
                                   <X className="w-3.5 h-3.5" />
                                 </Button>
                               </td>
@@ -742,15 +684,9 @@ export default function NotaCreditoPage() {
               {/* Observacion */}
               <Card>
                 <CardContent className="pt-6 space-y-2">
-                  <Label className="text-xs text-muted-foreground">
-                    Motivo / Observación
-                  </Label>
-                  <Textarea
-                    value={observacion}
-                    onChange={(e) => setObservacion(e.target.value)}
-                    placeholder="Motivo de la nota de crédito..."
-                    rows={3}
-                  />
+                  <Label className="text-xs text-muted-foreground">Motivo / Observación</Label>
+                  <Textarea value={observacion} onChange={(e) => setObservacion(e.target.value)}
+                    placeholder="Motivo de la nota de crédito..." rows={3} />
                 </CardContent>
               </Card>
             </div>
@@ -761,28 +697,49 @@ export default function NotaCreditoPage() {
                 <CardHeader className="pb-3">
                   <CardTitle className="text-base">Resumen NC</CardTitle>
                 </CardHeader>
-                <CardContent className="space-y-3">
+                <CardContent className="space-y-4">
                   <div className="flex justify-between text-sm">
                     <span className="text-muted-foreground">Tipo</span>
-                    <Badge variant="secondary">
-                      Nota de Crédito {getTipoFactura(selectedClient)}
-                    </Badge>
+                    <Badge variant="secondary">NC {getTipoFactura(selectedClient)}</Badge>
                   </div>
                   <div className="flex justify-between text-sm">
                     <span className="text-muted-foreground">Items</span>
                     <span>{items.length}</span>
                   </div>
-                  {origenId && origenId !== "none" && (() => {
-                    const origenVenta = clientVentas.find((v) => v.id === origenId);
-                    return origenVenta?.forma_pago ? (
-                      <div className="flex justify-between text-sm">
-                        <span className="text-muted-foreground">Devolución vía</span>
-                        <Badge variant="outline">{origenVenta.forma_pago}</Badge>
-                      </div>
-                    ) : null;
-                  })()}
+
+                  {/* Método de devolución */}
+                  <div className="space-y-2 pt-2 border-t">
+                    <Label className="text-xs font-semibold">Método de devolución</Label>
+                    <div className="space-y-2">
+                      {METODOS_DEV.map(({ value, label, icon: Icon }) => (
+                        <button
+                          key={value}
+                          onClick={() => setMetodoDev(value)}
+                          className={`w-full flex items-center gap-3 p-3 rounded-lg border text-sm transition-colors ${
+                            metodoDev === value
+                              ? "border-primary bg-primary/5 text-primary font-medium"
+                              : "border-border hover:bg-muted"
+                          }`}
+                        >
+                          <Icon className="w-4 h-4 shrink-0" />
+                          <span className="text-left">{label}</span>
+                          {metodoDev === value && (
+                            <span className="ml-auto w-2 h-2 rounded-full bg-primary" />
+                          )}
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* Explain impact */}
+                    <p className="text-xs text-muted-foreground mt-1">
+                      {metodoDev === "Cuenta Corriente"
+                        ? "Se acreditará en la cuenta corriente del cliente. Sin movimiento de caja."
+                        : `Se registrará un egreso de caja en ${metodoDev} por el monto devuelto.`}
+                    </p>
+                  </div>
+
                   {selectedClient && (
-                    <div className="flex justify-between text-sm">
+                    <div className="flex justify-between text-sm pt-2 border-t">
                       <span className="text-muted-foreground">Saldo actual</span>
                       <span className={selectedClient.saldo > 0 ? "text-red-500 font-medium" : selectedClient.saldo < 0 ? "text-emerald-500 font-medium" : ""}>
                         {formatCurrency(selectedClient.saldo)}
@@ -804,25 +761,15 @@ export default function NotaCreditoPage() {
                     </div>
                   )}
                   <div className="flex justify-between items-center pt-3 border-t">
-                    <span className="font-semibold">Total</span>
-                    <span className="text-2xl font-bold text-primary">
-                      {formatCurrency(total)}
-                    </span>
+                    <span className="font-semibold">Total a devolver</span>
+                    <span className="text-2xl font-bold text-red-500">{formatCurrency(total)}</span>
                   </div>
                 </CardContent>
               </Card>
 
-              <Button
-                className="w-full"
-                size="lg"
-                onClick={handleSave}
-                disabled={!clientId || items.length === 0 || saving}
-              >
-                {saving ? (
-                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                ) : (
-                  <FileMinus className="w-4 h-4 mr-2" />
-                )}
+              <Button className="w-full" size="lg" onClick={handleSave}
+                disabled={!clientId || items.length === 0 || saving}>
+                {saving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <FileMinus className="w-4 h-4 mr-2" />}
                 Emitir Nota de Crédito
               </Button>
             </div>
@@ -830,34 +777,146 @@ export default function NotaCreditoPage() {
         </TabsContent>
       </Tabs>
 
-      {/* Product search dialog */}
+      {/* ── NC Detail Dialog ── */}
+      <Dialog open={!!ncDetail} onOpenChange={(o) => !o && setNcDetail(null)}>
+        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <FileMinus className="w-5 h-5" />
+              {ncDetail?.nc.tipo_comprobante} — {ncDetail?.nc.numero}
+            </DialogTitle>
+          </DialogHeader>
+
+          {ncDetail && (
+            <div className="space-y-4">
+              {/* Info */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
+                <div className="rounded-lg border p-3">
+                  <p className="text-xs text-muted-foreground">Fecha</p>
+                  <p className="font-bold">{ncDetail.nc.fecha}</p>
+                </div>
+                <div className="rounded-lg border p-3">
+                  <p className="text-xs text-muted-foreground">Cliente</p>
+                  <p className="font-bold text-xs">{ncDetail.nc.clientes?.nombre || "-"}</p>
+                </div>
+                <div className="rounded-lg border p-3">
+                  <p className="text-xs text-muted-foreground">Devolución vía</p>
+                  <Badge variant="outline" className="mt-1">{ncDetail.nc.forma_pago}</Badge>
+                </div>
+                <div className="rounded-lg border p-3 bg-red-50 dark:bg-red-950/20">
+                  <p className="text-xs text-muted-foreground">Total</p>
+                  <p className="font-bold text-red-600">-{formatCurrency(ncDetail.nc.total)}</p>
+                </div>
+              </div>
+
+              {ncDetail.nc.observacion && (
+                <div className="rounded-lg border p-3 bg-muted/30">
+                  <p className="text-xs text-muted-foreground mb-1">Observación</p>
+                  <p className="text-sm">{ncDetail.nc.observacion}</p>
+                </div>
+              )}
+
+              {/* Items */}
+              <div>
+                <h4 className="text-sm font-semibold mb-2">Productos devueltos</h4>
+                {loadingDetail ? (
+                  <div className="flex justify-center py-4"><Loader2 className="w-4 h-4 animate-spin" /></div>
+                ) : ncDetail.items.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">Sin items</p>
+                ) : (
+                  <div className="border rounded-lg overflow-hidden">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="border-b bg-muted/50">
+                          <th className="text-left py-2 px-3">Código</th>
+                          <th className="text-left py-2 px-3">Descripción</th>
+                          <th className="text-center py-2 px-3">Cant</th>
+                          <th className="text-right py-2 px-3">Precio</th>
+                          <th className="text-right py-2 px-3">Subtotal</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {ncDetail.items.map((item: any) => (
+                          <tr key={item.id} className="border-b last:border-0">
+                            <td className="py-2 px-3 font-mono text-muted-foreground">{item.codigo || "-"}</td>
+                            <td className="py-2 px-3">{item.descripcion}</td>
+                            <td className="py-2 px-3 text-center">{item.cantidad}</td>
+                            <td className="py-2 px-3 text-right">{formatCurrency(item.precio_unitario)}</td>
+                            <td className="py-2 px-3 text-right font-semibold">{formatCurrency(item.subtotal)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                      <tfoot>
+                        <tr className="border-t bg-muted/30">
+                          <td colSpan={4} className="py-2 px-3 text-right font-semibold">Total devuelto</td>
+                          <td className="py-2 px-3 text-right font-bold text-red-600">-{formatCurrency(ncDetail.nc.total)}</td>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
+                )}
+              </div>
+
+              {/* Movimientos de caja */}
+              <div>
+                <h4 className="text-sm font-semibold mb-2">Movimientos de caja</h4>
+                {loadingDetail ? (
+                  <div className="flex justify-center py-4"><Loader2 className="w-4 h-4 animate-spin" /></div>
+                ) : ncDetail.movimientos.length === 0 ? (
+                  <div className="rounded-lg border p-3 bg-muted/30">
+                    <p className="text-xs text-muted-foreground">
+                      Sin movimientos de caja — la devolución se acreditó en cuenta corriente del cliente.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="border rounded-lg overflow-hidden">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="border-b bg-muted/50">
+                          <th className="text-left py-2 px-3">Hora</th>
+                          <th className="text-left py-2 px-3">Descripción</th>
+                          <th className="text-left py-2 px-3">Método</th>
+                          <th className="text-right py-2 px-3">Monto</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {ncDetail.movimientos.map((m: any) => (
+                          <tr key={m.id} className="border-b last:border-0">
+                            <td className="py-2 px-3 text-muted-foreground">{m.hora?.substring(0, 5)}</td>
+                            <td className="py-2 px-3">{m.descripcion}</td>
+                            <td className="py-2 px-3">
+                              <Badge variant="outline" className="text-[10px]">{m.metodo_pago}</Badge>
+                            </td>
+                            <td className="py-2 px-3 text-right font-semibold text-red-500">
+                              -{formatCurrency(Math.abs(m.monto))}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Product search */}
       <Dialog open={searchOpen} onOpenChange={setSearchOpen}>
         <DialogContent className="max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Buscar producto</DialogTitle>
-          </DialogHeader>
+          <DialogHeader><DialogTitle>Buscar producto</DialogTitle></DialogHeader>
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-            <Input
-              placeholder="Buscar por código o descripción..."
-              value={productSearch}
-              onChange={(e) => setProductSearch(e.target.value)}
-              className="pl-9"
-              autoFocus
-            />
+            <Input placeholder="Buscar..." value={productSearch} onChange={(e) => setProductSearch(e.target.value)} className="pl-9" autoFocus />
           </div>
           <div className="space-y-1 max-h-[300px] overflow-y-auto">
             {filteredProducts.slice(0, 20).map((p) => (
-              <button
-                key={p.id}
-                onClick={() => addItem(p)}
-                className="w-full flex items-center justify-between p-3 rounded-lg hover:bg-muted transition-colors text-left"
-              >
+              <button key={p.id} onClick={() => addItem(p)}
+                className="w-full flex items-center justify-between p-3 rounded-lg hover:bg-muted transition-colors text-left">
                 <div>
                   <p className="text-sm font-medium">{p.nombre}</p>
-                  <p className="text-xs text-muted-foreground font-mono">
-                    {p.codigo}
-                  </p>
+                  <p className="text-xs text-muted-foreground font-mono">{p.codigo}</p>
                 </div>
                 <div className="text-right">
                   <p className="text-sm font-semibold">{formatCurrency(p.precio)}</p>
@@ -865,64 +924,43 @@ export default function NotaCreditoPage() {
                 </div>
               </button>
             ))}
-            {filteredProducts.length === 0 && (
-              <p className="text-sm text-muted-foreground text-center py-8">
-                No se encontraron productos
-              </p>
-            )}
+            {filteredProducts.length === 0 && <p className="text-sm text-muted-foreground text-center py-8">No se encontraron productos</p>}
           </div>
         </DialogContent>
       </Dialog>
 
-      {/* Free text dialog */}
+      {/* Free text */}
       <Dialog open={freeText} onOpenChange={setFreeText}>
         <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>Agregar concepto libre</DialogTitle>
-          </DialogHeader>
+          <DialogHeader><DialogTitle>Agregar concepto libre</DialogTitle></DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
               <Label>Descripción</Label>
-              <Input
-                value={freeDesc}
-                onChange={(e) => setFreeDesc(e.target.value)}
-                placeholder="Descripción del concepto"
-                autoFocus
-              />
+              <Input value={freeDesc} onChange={(e) => setFreeDesc(e.target.value)} placeholder="Descripción" autoFocus />
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label>Cantidad</Label>
-                <Input
-                  type="number"
-                  value={freeQty}
-                  onChange={(e) => setFreeQty(Number(e.target.value))}
-                  min={1}
-                />
+                <Input type="number" value={freeQty} onChange={(e) => setFreeQty(Number(e.target.value))} min={1} />
               </div>
               <div className="space-y-2">
                 <Label>Precio unitario</Label>
-                <Input
-                  type="number"
-                  value={freePrice}
-                  onChange={(e) => setFreePrice(Number(e.target.value))}
-                  min={0}
-                />
+                <Input type="number" value={freePrice} onChange={(e) => setFreePrice(Number(e.target.value))} min={0} />
               </div>
             </div>
-            <Button className="w-full" onClick={addFreeItem}>
-              Agregar
-            </Button>
+            <Button className="w-full" onClick={addFreeItem}>Agregar</Button>
           </div>
         </DialogContent>
       </Dialog>
 
-      {/* Success dialog */}
+      {/* Success */}
       <Dialog open={!!successMsg} onOpenChange={(open) => !open && setSuccessMsg("")}>
         <DialogContent className="max-w-sm text-center">
           <div className="flex flex-col items-center gap-4 py-4">
             <div className="w-14 h-14 rounded-full bg-emerald-500/10 flex items-center justify-center">
-              <svg className="w-7 h-7 text-emerald-500" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>
+              <svg className="w-7 h-7 text-emerald-500" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+              </svg>
             </div>
             <p className="text-sm">{successMsg}</p>
             <Button className="w-full" onClick={() => setSuccessMsg("")}>Aceptar</Button>

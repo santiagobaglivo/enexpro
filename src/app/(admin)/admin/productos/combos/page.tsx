@@ -190,8 +190,14 @@ export default function CombosPage() {
   const handleSave = async () => {
     setSaving(true);
     try {
+      // Generate unique code if empty or editing with same code conflict
+      let codigo = form.codigo.trim();
+      if (!codigo) {
+        codigo = `COMBO-${Date.now()}`;
+      }
+
       const payload: Record<string, unknown> = {
-        codigo: form.codigo,
+        codigo,
         nombre: form.nombre,
         precio: form.precio,
         costo: form.costo,
@@ -206,11 +212,17 @@ export default function CombosPage() {
 
       if (editingCombo) {
         const { error } = await supabase.from("productos").update(payload).eq("id", editingCombo.id);
-        if (error) throw new Error(error.message);
+        if (error) {
+          if (error.code === "23505") throw new Error(`El código "${codigo}" ya está en uso por otro producto.`);
+          throw new Error(error.message);
+        }
         comboId = editingCombo.id;
       } else {
         const { data, error } = await supabase.from("productos").insert(payload).select("id").single();
-        if (error || !data) throw new Error(error?.message || "Error al crear combo");
+        if (error || !data) {
+          if (error?.code === "23505") throw new Error(`El código "${codigo}" ya está en uso por otro producto. Usá un código diferente.`);
+          throw new Error(error?.message || "Error al crear combo");
+        }
         comboId = data.id;
       }
 
