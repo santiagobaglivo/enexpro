@@ -343,7 +343,7 @@ export default function CajaPage() {
       return true;
     });
     setHistMovs(filteredMovs as CajaMovimiento[]);
-    setHistVentas(filteredVts as Venta[]);
+    setHistVentas(filteredVts as unknown as Venta[]);
   };
 
   // ─── Derived calculations ───
