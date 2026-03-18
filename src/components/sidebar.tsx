@@ -66,10 +66,8 @@ const navigation: NavItem[] = [
       { name: "Cambio de Artículos", href: "/admin/ventas/cambios" },
       { name: "Percepciones", href: "/admin/ventas/percepciones" },
       { name: "Carga Manual", href: "/admin/ventas/carga-manual" },
-      { name: "Entregas Pendientes", href: "/admin/ventas/entregas-pendientes" },
-      { name: "Hoja de Ruta", href: "/admin/ventas/hoja-ruta" },
+      { name: "Entregas y Ruta", href: "/admin/ventas/hoja-ruta" },
       { name: "Resumen por Vendedor", href: "/admin/ventas/resumen-vendedor" },
-      { name: "Cobranzas", href: "/admin/clientes/cobranzas" },
     ],
   },
   {

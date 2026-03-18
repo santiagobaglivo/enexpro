@@ -87,10 +87,10 @@ export default function TiendaNavbar() {
             <Link href="/cuenta" className="hover:text-pink-400 transition">
               Mi cuenta
             </Link>
-            <span className="flex items-center gap-1">
+            <a href="tel:+541112345678" className="flex items-center gap-1 hover:text-pink-400 transition" suppressHydrationWarning>
               <Phone className="h-3 w-3" />
-              +54 11 1234-5678
-            </span>
+              <span suppressHydrationWarning>+54 11 1234-5678</span>
+            </a>
           </div>
         </div>
       </div>
@@ -161,7 +161,7 @@ export default function TiendaNavbar() {
             >
               <ShoppingCart className="h-5 w-5" />
               {itemCount > 0 && (
-                <span className="absolute -right-0.5 -top-0.5 flex h-5 w-5 animate-bounce items-center justify-center rounded-full bg-pink-600 text-[10px] font-bold text-white shadow-sm [animation-duration:1s] [animation-iteration-count:1]">
+                <span suppressHydrationWarning className="absolute -right-0.5 -top-0.5 flex h-5 w-5 animate-bounce items-center justify-center rounded-full bg-pink-600 text-[10px] font-bold text-white shadow-sm [animation-duration:1s] [animation-iteration-count:1]">
                   {itemCount > 99 ? "99+" : itemCount}
                 </span>
               )}

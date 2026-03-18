@@ -53,6 +53,7 @@ interface Descuento {
   fecha_fin: string | null;
   aplica_a: string;
   categorias_ids: string[];
+  subcategorias_ids: string[];
   productos_ids: string[];
   presentacion: string;
   activo: boolean;
@@ -69,6 +70,12 @@ interface Subcategoria {
   id: string;
   nombre: string;
   categoria_id: string;
+}
+
+interface ProductoOption {
+  id: string;
+  nombre: string;
+  codigo: string;
 }
 
 const STEPS = [
@@ -131,13 +138,19 @@ export default function DescuentosPage() {
   const [fechaFin, setFechaFin] = useState("");
   const [aplicaA, setAplicaA] = useState("todos");
   const [categoriasIds, setCategoriasIds] = useState<string[]>([]);
+  const [subcategoriasIds, setSubcategoriasIds] = useState<string[]>([]);
   const [presentacion, setPresentacion] = useState("todas");
+  const [productosIds, setProductosIds] = useState<string[]>([]);
 
   // categories for step 4
   const [categorias, setCategorias] = useState<Categoria[]>([]);
   const [subcategorias, setSubcategorias] = useState<Subcategoria[]>([]);
   const [catSearch, setCatSearch] = useState("");
   const [expandedCats, setExpandedCats] = useState<string[]>([]);
+
+  // products for step 4
+  const [productosAll, setProductosAll] = useState<ProductoOption[]>([]);
+  const [prodSearch, setProdSearch] = useState("");
 
   // editing
   const [editId, setEditId] = useState<string | null>(null);
@@ -153,12 +166,14 @@ export default function DescuentosPage() {
   }, []);
 
   const fetchCategorias = useCallback(async () => {
-    const [{ data: cats }, { data: subs }] = await Promise.all([
+    const [{ data: cats }, { data: subs }, { data: prods }] = await Promise.all([
       supabase.from("categorias").select("id, nombre").order("nombre"),
       supabase.from("subcategorias").select("id, nombre, categoria_id").order("nombre"),
+      supabase.from("productos").select("id, nombre, codigo").eq("activo", true).order("nombre"),
     ]);
     setCategorias(cats ?? []);
     setSubcategorias(subs ?? []);
+    setProductosAll(prods ?? []);
   }, []);
 
   useEffect(() => {
@@ -175,10 +190,13 @@ export default function DescuentosPage() {
     setFechaFin("");
     setAplicaA("todos");
     setCategoriasIds([]);
+    setSubcategoriasIds([]);
+    setProductosIds([]);
     setPresentacion("todas");
     setEditId(null);
     setCatSearch("");
     setExpandedCats([]);
+    setProdSearch("");
   };
 
   const openCreate = () => {
@@ -196,6 +214,8 @@ export default function DescuentosPage() {
     setFechaFin(d.fecha_fin ?? "");
     setAplicaA(d.aplica_a);
     setCategoriasIds(d.categorias_ids ?? []);
+    setSubcategoriasIds(d.subcategorias_ids ?? []);
+    setProductosIds(d.productos_ids ?? []);
     setPresentacion(d.presentacion);
     setDialogOpen(true);
   };
@@ -210,7 +230,8 @@ export default function DescuentosPage() {
       fecha_fin: fechaFin || null,
       aplica_a: aplicaA,
       categorias_ids: aplicaA === "categorias" ? categoriasIds : [],
-      productos_ids: [],
+      subcategorias_ids: aplicaA === "subcategorias" ? subcategoriasIds : [],
+      productos_ids: aplicaA === "productos" ? productosIds : [],
       presentacion,
       updated_at: new Date().toISOString(),
     };
@@ -266,6 +287,18 @@ export default function DescuentosPage() {
     );
   };
 
+  // product helpers
+  const filteredProds = productosAll.filter((p) =>
+    p.nombre.toLowerCase().includes(prodSearch.toLowerCase()) ||
+    p.codigo.toLowerCase().includes(prodSearch.toLowerCase())
+  );
+
+  const toggleProdSelect = (id: string) => {
+    setProductosIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
+  };
+
   const addDuration = (days: number | null) => {
     if (days === null) {
       setFechaFin("");
@@ -290,6 +323,7 @@ export default function DescuentosPage() {
     switch (v) {
       case "todos": return "Todos los productos";
       case "categorias": return "Categorías específicas";
+      case "subcategorias": return "Subcategorías específicas";
       case "productos": return "Productos específicos";
       default: return v;
     }
@@ -645,21 +679,19 @@ export default function DescuentosPage() {
               {/* Aplica a */}
               <div className="space-y-2">
                 <Label>Aplica a</Label>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   {[
                     { value: "todos", label: "Todos los productos", desc: "Aplica a todo el catálogo", icon: Package },
-                    { value: "categorias", label: "Categorías específicas", desc: "Seleccioná categorías", icon: Tag },
-                    { value: "productos", label: "Productos específicos", desc: "Próximamente", icon: Package, disabled: true },
+                    { value: "categorias", label: "Categorías", desc: "Seleccioná categorías", icon: Tag },
+                    { value: "subcategorias", label: "Subcategorías", desc: "Seleccioná subcategorías", icon: Tag },
+                    { value: "productos", label: "Productos específicos", desc: "Seleccioná productos", icon: Search },
                   ].map((opt) => (
                     <button
                       key={opt.value}
-                      disabled={opt.disabled}
                       onClick={() => setAplicaA(opt.value)}
                       className={`relative flex flex-col items-start p-4 rounded-lg border-2 text-left transition-colors ${
                         aplicaA === opt.value
                           ? "border-primary bg-primary/5"
-                          : opt.disabled
-                          ? "border-muted opacity-50 cursor-not-allowed"
                           : "border-muted hover:border-muted-foreground/30 cursor-pointer"
                       }`}
                     >
@@ -738,6 +770,137 @@ export default function DescuentosPage() {
                 </div>
               )}
 
+              {/* Subcategory selector */}
+              {aplicaA === "subcategorias" && (
+                <div className="space-y-3">
+                  <div className="relative">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                    <Input
+                      className="pl-9"
+                      placeholder="Buscar subcategorías..."
+                      value={catSearch}
+                      onChange={(e) => setCatSearch(e.target.value)}
+                    />
+                  </div>
+                  {subcategoriasIds.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5">
+                      {subcategoriasIds.map((id) => {
+                        const sub = subcategorias.find((s) => s.id === id);
+                        const parentCat = sub ? categorias.find((c) => c.id === sub.categoria_id) : null;
+                        return (
+                          <Badge key={id} variant="secondary" className="gap-1 pr-1">
+                            {sub ? `${sub.nombre}${parentCat ? ` (${parentCat.nombre})` : ""}` : id}
+                            <button
+                              onClick={() => setSubcategoriasIds((prev) => prev.filter((x) => x !== id))}
+                              className="ml-1 rounded-full hover:bg-muted p-0.5"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </Badge>
+                        );
+                      })}
+                    </div>
+                  )}
+                  <div className="border rounded-lg max-h-60 overflow-y-auto divide-y">
+                    {categorias.map((cat) => {
+                      const subs = subcategorias.filter((s) => s.categoria_id === cat.id && s.nombre.toLowerCase().includes(catSearch.toLowerCase()));
+                      if (subs.length === 0) return null;
+                      return (
+                        <div key={cat.id}>
+                          <div className="px-3 py-1.5 text-xs font-semibold text-muted-foreground bg-muted/30">{cat.nombre}</div>
+                          {subs.map((sub) => {
+                            const subSelected = subcategoriasIds.includes(sub.id);
+                            return (
+                              <div
+                                key={sub.id}
+                                className="flex items-center gap-2 px-3 py-2 pl-6 hover:bg-muted/30 cursor-pointer"
+                                onClick={() => setSubcategoriasIds((prev) => prev.includes(sub.id) ? prev.filter((x) => x !== sub.id) : [...prev, sub.id])}
+                              >
+                                <div
+                                  className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 ${
+                                    subSelected ? "bg-primary border-primary" : "border-muted-foreground/40"
+                                  }`}
+                                >
+                                  {subSelected && <Check className="w-3 h-3 text-primary-foreground" />}
+                                </div>
+                                <span className="text-sm">{sub.nombre}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    {subcategoriasIds.length} subcategoría(s) seleccionada(s)
+                  </p>
+                </div>
+              )}
+
+              {/* Product selector */}
+              {aplicaA === "productos" && (
+                <div className="space-y-3">
+                  <div className="relative">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                    <Input
+                      className="pl-9"
+                      placeholder="Buscar productos por nombre o código..."
+                      value={prodSearch}
+                      onChange={(e) => setProdSearch(e.target.value)}
+                    />
+                  </div>
+                  {productosIds.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5">
+                      {productosIds.map((id) => {
+                        const prod = productosAll.find((p) => p.id === id);
+                        return (
+                          <Badge key={id} variant="secondary" className="gap-1 pr-1">
+                            {prod ? prod.nombre : id}
+                            <button
+                              onClick={() => toggleProdSelect(id)}
+                              className="ml-1 rounded-full hover:bg-muted p-0.5"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </Badge>
+                        );
+                      })}
+                    </div>
+                  )}
+                  <div className="border rounded-lg max-h-60 overflow-y-auto divide-y">
+                    {filteredProds.length === 0 ? (
+                      <div className="px-3 py-4 text-sm text-center text-muted-foreground">
+                        No se encontraron productos
+                      </div>
+                    ) : (
+                      filteredProds.map((prod) => {
+                        const selected = productosIds.includes(prod.id);
+                        return (
+                          <div
+                            key={prod.id}
+                            className="flex items-center gap-2 px-3 py-2 hover:bg-muted/50 cursor-pointer"
+                            onClick={() => toggleProdSelect(prod.id)}
+                          >
+                            <div
+                              className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 ${
+                                selected ? "bg-primary border-primary" : "border-muted-foreground/40"
+                              }`}
+                            >
+                              {selected && <Check className="w-3 h-3 text-primary-foreground" />}
+                            </div>
+                            <span className="text-sm flex-1">{prod.nombre}</span>
+                            <span className="text-xs text-muted-foreground font-mono">{prod.codigo}</span>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    {productosIds.length} producto(s) seleccionado(s)
+                  </p>
+                </div>
+              )}
+
               <Separator />
 
               {/* Presentación */}
@@ -788,7 +951,12 @@ export default function DescuentosPage() {
                   </div>
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">Aplica a</span>
-                    <span className="font-medium">{aplicaALabel(aplicaA)}</span>
+                    <span className="font-medium">
+                      {aplicaALabel(aplicaA)}
+                      {aplicaA === "categorias" && categoriasIds.length > 0 && ` (${categoriasIds.length})`}
+                      {aplicaA === "subcategorias" && subcategoriasIds.length > 0 && ` (${subcategoriasIds.length})`}
+                      {aplicaA === "productos" && productosIds.length > 0 && ` (${productosIds.length})`}
+                    </span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">Presentación</span>

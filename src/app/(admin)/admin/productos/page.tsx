@@ -46,6 +46,7 @@ import {
   Filter,
   Settings,
   Layers,
+  ChevronDown,
 } from "lucide-react";
 import * as XLSX from "xlsx";
 import { ImageUpload } from "@/components/image-upload";
@@ -163,7 +164,7 @@ export default function ProductosPage() {
     estado: string;
     observacion: string | null;
     cliente: { nombre: string; cuit: string | null } | null;
-    items: { id: string; descripcion: string; cantidad: number; precio_unitario: number; subtotal: number; unidad_medida: string | null }[];
+    items: { id: string; descripcion: string; cantidad: number; precio_unitario: number; subtotal: number; unidad_medida: string | null; unidades_por_presentacion?: number }[];
   } | null>(null);
 
   const openOrdenDetail = useCallback(async (ordenId: string) => {
@@ -180,7 +181,7 @@ export default function ProductosPage() {
       if (venta) {
         const { data: items } = await supabase
           .from("venta_items")
-          .select("id, descripcion, cantidad, precio_unitario, subtotal, unidad_medida")
+          .select("id, descripcion, cantidad, precio_unitario, subtotal, unidad_medida, unidades_por_presentacion")
           .eq("venta_id", ordenId)
           .order("created_at");
         setOrdenDetail({
@@ -252,6 +253,14 @@ export default function ProductosPage() {
   const [uploadingImage, setUploadingImage] = useState(false);
   const [showDescription, setShowDescription] = useState(false);
 
+  // Searchable dropdown states for clasificacion
+  const [formCatSearch, setFormCatSearch] = useState("");
+  const [formCatOpen, setFormCatOpen] = useState(false);
+  const [formSubSearch, setFormSubSearch] = useState("");
+  const [formSubOpen, setFormSubOpen] = useState(false);
+  const [formMarcaSearch, setFormMarcaSearch] = useState("");
+  const [formMarcaOpen, setFormMarcaOpen] = useState(false);
+
   const [selectedProveedores, setSelectedProveedores] = useState<string[]>([]);
   const [presentaciones, setPresentaciones] = useState<Presentacion[]>([]);
 
@@ -270,13 +279,14 @@ export default function ProductosPage() {
   const [comboProductSearch, setComboProductSearch] = useState("");
   const [selectedComboRow, setSelectedComboRow] = useState<string | null>(null);
   const [presCodigoMap, setPresCodigoMap] = useState<Record<string, { codigo: string }[]>>({});
+  const [presDisplayMap, setPresDisplayMap] = useState<Record<string, { nombre: string; cantidad: number }[]>>({});
   const [comboStockMap, setComboStockMap] = useState<Record<string, number>>({});
 
   const fetchProducts = useCallback(async () => {
     setLoading(true);
     const [{ data }, { data: allPres }, { data: allCI }] = await Promise.all([
-      supabase.from("productos").select("*, categorias(nombre), marcas(nombre)").eq("activo", true).order("nombre"),
-      supabase.from("presentaciones").select("producto_id, sku"),
+      supabase.from("productos").select("id, codigo, nombre, precio, costo, stock, stock_minimo, stock_maximo, categoria_id, subcategoria_id, marca_id, imagen_url, es_combo, activo, unidad_medida, descripcion_detallada, visibilidad, updated_at, categorias(nombre), marcas(nombre)").eq("activo", true).order("nombre"),
+      supabase.from("presentaciones").select("producto_id, sku, nombre, cantidad"),
       supabase.from("combo_items").select("combo_id, cantidad, productos!combo_items_producto_id_fkey(stock)"),
     ]);
     const allProds = (data as ProductoWithRelations[]) || [];
@@ -286,8 +296,18 @@ export default function ProductosPage() {
     })));
     if (allPres) {
       const map: Record<string, { codigo: string }[]> = {};
-      for (const pr of allPres) { if (!map[pr.producto_id]) map[pr.producto_id] = []; map[pr.producto_id].push({ codigo: pr.sku || "" }); }
+      const displayMap: Record<string, { nombre: string; cantidad: number }[]> = {};
+      for (const pr of allPres) {
+        if (!map[pr.producto_id]) map[pr.producto_id] = [];
+        map[pr.producto_id].push({ codigo: pr.sku || "" });
+        // Track non-unit presentations for display (boxes and medio carton)
+        if (pr.cantidad !== 1) {
+          if (!displayMap[pr.producto_id]) displayMap[pr.producto_id] = [];
+          displayMap[pr.producto_id].push({ nombre: pr.nombre || (pr.cantidad < 1 ? "Medio Cartón" : `x${pr.cantidad}`), cantidad: pr.cantidad });
+        }
+      }
       setPresCodigoMap(map);
+      setPresDisplayMap(displayMap);
     }
     // Build combo stock map: min(floor(componentStock / qty)) per combo
     if (allCI) {
@@ -307,17 +327,17 @@ export default function ProductosPage() {
   }, []);
 
   const fetchCategories = useCallback(async () => {
-    const { data } = await supabase.from("categorias").select("*").order("nombre");
+    const { data } = await supabase.from("categorias").select("id, nombre").order("nombre");
     setCategories(data || []);
   }, []);
 
   const fetchSubcategories = useCallback(async () => {
-    const { data } = await supabase.from("subcategorias").select("*").order("nombre");
+    const { data } = await supabase.from("subcategorias").select("id, nombre, categoria_id").order("nombre");
     setSubcategories(data || []);
   }, []);
 
   const fetchMarcas = useCallback(async () => {
-    const { data } = await supabase.from("marcas").select("*").order("nombre");
+    const { data } = await supabase.from("marcas").select("id, nombre").order("nombre");
     setMarcas(data || []);
   }, []);
 
@@ -417,7 +437,7 @@ export default function ProductosPage() {
     // Load presentaciones for this product
     const { data: presData } = await supabase
       .from("presentaciones")
-      .select("*")
+      .select("id, producto_id, nombre, cantidad, sku, costo, precio, precio_oferta")
       .eq("producto_id", p.id)
       .order("cantidad");
     const loadedPres = (presData || []) as Presentacion[];
@@ -485,7 +505,16 @@ export default function ProductosPage() {
       let productId: string;
 
       if (editingProduct) {
-        const { error } = await supabase.from("productos").update(payload).eq("id", editingProduct.id);
+        // Try to save previous price if price changed
+        if (editingProduct.precio !== form.precio) {
+          (payload as any).precio_anterior = editingProduct.precio;
+        }
+        let { error } = await supabase.from("productos").update(payload).eq("id", editingProduct.id);
+        // If precio_anterior column doesn't exist yet, retry without it
+        if (error && error.message?.includes("precio_anterior")) {
+          delete (payload as any).precio_anterior;
+          ({ error } = await supabase.from("productos").update(payload).eq("id", editingProduct.id));
+        }
         if (error) {
           if (error.code === "23505") throw new Error(`El código "${codigo}" ya está en uso.`);
           throw new Error(error.message);
@@ -571,13 +600,68 @@ export default function ProductosPage() {
     setHistoryOpen(true);
     setHistoryItems([]);
 
+    // Fetch movements for this product
     const { data } = await supabase
       .from("stock_movimientos")
       .select("id, tipo, cantidad_antes, cantidad_despues, cantidad, referencia, descripcion, usuario, created_at, orden_id")
       .eq("producto_id", p.id)
       .order("created_at", { ascending: false });
 
-    const items: MovimientoItem[] = ((data as any[]) || []).map((item: any) => ({
+    let allMovs = (data as any[]) || [];
+
+    // For combo products: also fetch movements from component products
+    if ((p as any).es_combo) {
+      const { data: comboItems } = await supabase
+        .from("combo_items")
+        .select("producto_id, productos!combo_items_producto_id_fkey(nombre)")
+        .eq("combo_id", p.id);
+      if (comboItems && comboItems.length > 0) {
+        const componentNameMap: Record<string, string> = {};
+        comboItems.forEach((ci: any) => {
+          componentNameMap[ci.producto_id] = ci.productos?.nombre || "Componente";
+        });
+        const componentIds = comboItems.map((ci: any) => ci.producto_id);
+
+        // Get all orden_ids from combo's own movements to correlate
+        const comboOrdenIds = allMovs.filter((m: any) => m.orden_id).map((m: any) => m.orden_id);
+
+        // Fetch component movements: by description match OR by shared orden_id
+        const queries = [
+          supabase
+            .from("stock_movimientos")
+            .select("id, tipo, cantidad_antes, cantidad_despues, cantidad, referencia, descripcion, usuario, created_at, orden_id, producto_id")
+            .in("producto_id", componentIds)
+            .order("created_at", { ascending: false }),
+        ];
+
+        const [{ data: allComponentMovs }] = await Promise.all(queries);
+
+        if (allComponentMovs) {
+          // Filter: movements that reference this combo (by name or shared orden_id)
+          const comboNameLower = p.nombre.toLowerCase();
+          const ordenIdSet = new Set(comboOrdenIds);
+          const relevantMovs = allComponentMovs.filter((m: any) => {
+            if (m.descripcion && m.descripcion.toLowerCase().includes(comboNameLower)) return true;
+            if (m.orden_id && ordenIdSet.has(m.orden_id)) return true;
+            return false;
+          });
+
+          // Tag component movements with product name
+          const taggedMovs = relevantMovs.map((m: any) => ({
+            ...m,
+            descripcion: `[${componentNameMap[m.producto_id] || "Componente"}] ${m.descripcion || ""}`,
+          }));
+
+          // Deduplicate by id
+          const existingIds = new Set(allMovs.map((m: any) => m.id));
+          const newMovs = taggedMovs.filter((m: any) => !existingIds.has(m.id));
+          allMovs = [...allMovs, ...newMovs];
+          allMovs.sort((a: any, b: any) => (b.created_at || "").localeCompare(a.created_at || ""));
+        }
+      }
+    }
+
+    const items: MovimientoItem[] = allMovs.map((item: any) => ({
       id: item.id,
       tipo: item.tipo || "ajuste",
       cantidad_antes: item.cantidad_antes ?? 0,
@@ -937,12 +1021,14 @@ export default function ProductosPage() {
     );
   };
 
-  const filteredSubcategories = subcategories.filter(
-    (s) => s.categoria_id === form.categoria_id
+  const filteredSubcategories = useMemo(
+    () => subcategories.filter((s) => s.categoria_id === form.categoria_id),
+    [subcategories, form.categoria_id]
   );
 
-  const filteredSubcategoriesForFilter = subcategories.filter(
-    (s) => category === "all" || s.categoria_id === category
+  const filteredSubcategoriesForFilter = useMemo(
+    () => subcategories.filter((s) => category === "all" || s.categoria_id === category),
+    [subcategories, category]
   );
 
   const filtered = useMemo(() => {
@@ -997,7 +1083,9 @@ export default function ProductosPage() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Productos</h1>
           <p className="text-muted-foreground text-sm">
-            {products.length} articulos en la lista de precios
+            {filtered.length === products.length
+              ? `${products.length} articulos en la lista de precios`
+              : `${filtered.length} de ${products.length} articulos`}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -1086,8 +1174,8 @@ export default function ProductosPage() {
       </div>
 
       {/* Filters */}
-      <Card>
-        <CardContent className="pt-6 space-y-4">
+      <Card className="overflow-visible">
+        <CardContent className="pt-6 space-y-4 overflow-visible">
           <div className="flex items-center gap-3">
             <div className="flex-1">
               <Label className="uppercase text-xs text-muted-foreground font-semibold tracking-wide mb-1.5 block">Buscar</Label>
@@ -1301,11 +1389,19 @@ export default function ProductosPage() {
                         {product.codigo}
                       </td>
                       <td className="py-3 px-4 font-medium">
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           {product.nombre}
                           {(product as any).es_combo && (
                             <Badge className="text-[10px] px-1.5 py-0 bg-emerald-100 text-emerald-700 border border-emerald-300">COMBO</Badge>
                           )}
+                          {presDisplayMap[product.id]?.slice().sort((a, b) => a.cantidad - b.cantidad).map((pres, i) => {
+                            const isMedio = pres.cantidad < 1;
+                            return (
+                            <Badge key={i} variant="outline" className={`text-[10px] px-1.5 py-0 ${isMedio ? "bg-amber-50 text-amber-600 border-amber-200" : "bg-blue-50 text-blue-600 border-blue-200"}`}>
+                              {isMedio ? "Medio Cartón" : pres.nombre}{!isMedio && !pres.nombre.toLowerCase().includes(`x${pres.cantidad}`) ? ` (x${pres.cantidad})` : ""}
+                            </Badge>
+                            );
+                          })}
                         </div>
                       </td>
                       <td className="py-3 px-4">
@@ -1337,7 +1433,12 @@ export default function ProductosPage() {
                         {formatCurrency(product.precio)}
                       </td>
                       <td className="py-3 px-4 text-muted-foreground text-xs">
-                        {new Date(product.fecha_actualizacion).toLocaleDateString("es-AR")}
+                        {(() => {
+                          const d = (product as any).updated_at;
+                          if (!d) return "\u2014";
+                          const date = new Date(d);
+                          return isNaN(date.getTime()) ? "\u2014" : date.toLocaleDateString("es-AR");
+                        })()}
                       </td>
                       <td className="py-3 px-4 text-right">
                         <div className="flex justify-end gap-1">
@@ -1480,7 +1581,7 @@ export default function ProductosPage() {
                   />
                 </div>
                 <div className="flex-1 space-y-3">
-                  <div className="grid grid-cols-3 gap-3">
+                  <div className="grid grid-cols-[150px_1fr_120px] gap-3">
                     <div className="space-y-1.5">
                       <Label className="text-xs text-muted-foreground">Codigo</Label>
                       <Input
@@ -1517,6 +1618,16 @@ export default function ProductosPage() {
                       </Select>
                     </div>
                   </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-xs text-muted-foreground">Descripcion (opcional)</Label>
+                    <Textarea
+                      rows={2}
+                      value={form.descripcion_detallada}
+                      onChange={(e) => setForm({ ...form, descripcion_detallada: e.target.value })}
+                      placeholder="Descripcion opcional del producto..."
+                      className="resize-none text-sm"
+                    />
+                  </div>
                 </div>
               </div>
             </div>
@@ -1525,69 +1636,93 @@ export default function ProductosPage() {
             <div>
               <h3 className="text-sm font-medium mb-3 text-muted-foreground">Clasificacion</h3>
               <div className="grid grid-cols-3 gap-3">
-                <div className="space-y-1.5">
-                  <Label className="text-xs text-muted-foreground">Categoria</Label>
-                  <Select
-                    value={form.categoria_id || ""}
-                    onValueChange={(v) =>
-                      setForm({ ...form, categoria_id: v ?? "", subcategoria_id: "" })
-                    }
-                  >
-                    <SelectTrigger className="h-9">
-                      <SelectValue placeholder="Seleccionar">
-                        {categories.find((c) => c.id === form.categoria_id)?.nombre ?? "Seleccionar"}
-                      </SelectValue>
-                    </SelectTrigger>
-                    <SelectContent>
-                      {categories.map((c) => (
-                        <SelectItem key={c.id} value={c.id}>
-                          {c.nombre}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-1.5">
-                  <Label className="text-xs text-muted-foreground">Subcategoria</Label>
-                  <Select
-                    value={form.subcategoria_id || ""}
-                    onValueChange={(v) => setForm({ ...form, subcategoria_id: v ?? "" })}
-                    disabled={!form.categoria_id}
-                  >
-                    <SelectTrigger className="h-9">
-                      <SelectValue placeholder="Seleccionar">
-                        {subcategories.find((s) => s.id === form.subcategoria_id)?.nombre ?? "Seleccionar"}
-                      </SelectValue>
-                    </SelectTrigger>
-                    <SelectContent>
-                      {filteredSubcategories.map((s) => (
-                        <SelectItem key={s.id} value={s.id}>
-                          {s.nombre}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-1.5">
-                  <Label className="text-xs text-muted-foreground">Marca</Label>
-                  <Select
-                    value={form.marca_id || ""}
-                    onValueChange={(v) => setForm({ ...form, marca_id: v ?? "" })}
-                  >
-                    <SelectTrigger className="h-9">
-                      <SelectValue placeholder="Seleccionar">
-                        {marcas.find((m) => m.id === form.marca_id)?.nombre ?? "Seleccionar"}
-                      </SelectValue>
-                    </SelectTrigger>
-                    <SelectContent>
-                      {marcas.map((m) => (
-                        <SelectItem key={m.id} value={m.id}>
-                          {m.nombre}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
+                {/* Categoria searchable */}
+                {(() => {
+                  const [catSearch, setCatSearch] = [formCatSearch, setFormCatSearch];
+                  const [catOpen, setCatOpen] = [formCatOpen, setFormCatOpen];
+                  const filtered = categories.filter((c) => c.nombre.toLowerCase().includes(catSearch.toLowerCase()));
+                  const selected = categories.find((c) => c.id === form.categoria_id);
+                  return (
+                  <div className="space-y-1.5 relative" ref={null}>
+                    <Label className="text-xs text-muted-foreground">Categoria</Label>
+                    <button type="button" onClick={() => setCatOpen(!catOpen)} className="flex items-center justify-between w-full h-9 px-3 border rounded-md text-sm bg-background hover:bg-muted/50 transition">
+                      <span className={selected ? "" : "text-muted-foreground"}>{selected?.nombre || "Seleccionar"}</span>
+                      <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />
+                    </button>
+                    {catOpen && (<>
+                      <div className="fixed inset-0 z-[199]" onClick={() => { setCatOpen(false); setCatSearch(""); }} />
+                      <div className="absolute top-full left-0 right-0 mt-1 bg-background border rounded-lg shadow-lg z-[200] max-h-52 overflow-hidden">
+                        <div className="p-2 border-b"><input autoFocus placeholder="Buscar..." value={catSearch} onChange={(e) => setCatSearch(e.target.value)} className="w-full text-sm px-2 py-1.5 border rounded-md outline-none focus:ring-1 focus:ring-primary" /></div>
+                        <div className="max-h-40 overflow-y-auto p-1">
+                          {filtered.map((c) => (
+                            <button key={c.id} type="button" onClick={() => { setForm({ ...form, categoria_id: c.id, subcategoria_id: "" }); setCatOpen(false); setCatSearch(""); }}
+                              className={`w-full text-left px-3 py-1.5 text-sm rounded-md hover:bg-muted transition ${form.categoria_id === c.id ? "bg-primary/10 font-medium" : ""}`}>{c.nombre}</button>
+                          ))}
+                          {filtered.length === 0 && <p className="text-xs text-muted-foreground text-center py-2">Sin resultados</p>}
+                        </div>
+                      </div>
+                    </>)}
+                  </div>
+                  );
+                })()}
+                {/* Subcategoria searchable */}
+                {(() => {
+                  const [subSearch, setSubSearch] = [formSubSearch, setFormSubSearch];
+                  const [subOpen, setSubOpen] = [formSubOpen, setFormSubOpen];
+                  const filtered = filteredSubcategories.filter((s) => s.nombre.toLowerCase().includes(subSearch.toLowerCase()));
+                  const selected = subcategories.find((s) => s.id === form.subcategoria_id);
+                  return (
+                  <div className="space-y-1.5 relative">
+                    <Label className="text-xs text-muted-foreground">Subcategoria</Label>
+                    <button type="button" onClick={() => form.categoria_id && setSubOpen(!subOpen)} className={`flex items-center justify-between w-full h-9 px-3 border rounded-md text-sm bg-background transition ${form.categoria_id ? "hover:bg-muted/50" : "opacity-50 cursor-not-allowed"}`}>
+                      <span className={selected ? "" : "text-muted-foreground"}>{selected?.nombre || "Seleccionar"}</span>
+                      <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />
+                    </button>
+                    {subOpen && (<>
+                      <div className="fixed inset-0 z-[199]" onClick={() => { setSubOpen(false); setSubSearch(""); }} />
+                      <div className="absolute top-full left-0 right-0 mt-1 bg-background border rounded-lg shadow-lg z-[200] max-h-52 overflow-hidden">
+                        <div className="p-2 border-b"><input autoFocus placeholder="Buscar..." value={subSearch} onChange={(e) => setSubSearch(e.target.value)} className="w-full text-sm px-2 py-1.5 border rounded-md outline-none focus:ring-1 focus:ring-primary" /></div>
+                        <div className="max-h-40 overflow-y-auto p-1">
+                          {filtered.map((s) => (
+                            <button key={s.id} type="button" onClick={() => { setForm({ ...form, subcategoria_id: s.id }); setSubOpen(false); setSubSearch(""); }}
+                              className={`w-full text-left px-3 py-1.5 text-sm rounded-md hover:bg-muted transition ${form.subcategoria_id === s.id ? "bg-primary/10 font-medium" : ""}`}>{s.nombre}</button>
+                          ))}
+                          {filtered.length === 0 && <p className="text-xs text-muted-foreground text-center py-2">Sin resultados</p>}
+                        </div>
+                      </div>
+                    </>)}
+                  </div>
+                  );
+                })()}
+                {/* Marca searchable */}
+                {(() => {
+                  const [marcaSearch, setMarcaSearch] = [formMarcaSearch, setFormMarcaSearch];
+                  const [marcaOpen, setMarcaOpen] = [formMarcaOpen, setFormMarcaOpen];
+                  const filtered = marcas.filter((m) => m.nombre.toLowerCase().includes(marcaSearch.toLowerCase()));
+                  const selected = marcas.find((m) => m.id === form.marca_id);
+                  return (
+                  <div className="space-y-1.5 relative">
+                    <Label className="text-xs text-muted-foreground">Marca</Label>
+                    <button type="button" onClick={() => setMarcaOpen(!marcaOpen)} className="flex items-center justify-between w-full h-9 px-3 border rounded-md text-sm bg-background hover:bg-muted/50 transition">
+                      <span className={selected ? "" : "text-muted-foreground"}>{selected?.nombre || "Seleccionar"}</span>
+                      <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />
+                    </button>
+                    {marcaOpen && (<>
+                      <div className="fixed inset-0 z-[199]" onClick={() => { setMarcaOpen(false); setMarcaSearch(""); }} />
+                      <div className="absolute top-full left-0 right-0 mt-1 bg-background border rounded-lg shadow-lg z-[200] max-h-52 overflow-hidden">
+                        <div className="p-2 border-b"><input autoFocus placeholder="Buscar..." value={marcaSearch} onChange={(e) => setMarcaSearch(e.target.value)} className="w-full text-sm px-2 py-1.5 border rounded-md outline-none focus:ring-1 focus:ring-primary" /></div>
+                        <div className="max-h-40 overflow-y-auto p-1">
+                          {filtered.map((m) => (
+                            <button key={m.id} type="button" onClick={() => { setForm({ ...form, marca_id: m.id }); setMarcaOpen(false); setMarcaSearch(""); }}
+                              className={`w-full text-left px-3 py-1.5 text-sm rounded-md hover:bg-muted transition ${form.marca_id === m.id ? "bg-primary/10 font-medium" : ""}`}>{m.nombre}</button>
+                          ))}
+                          {filtered.length === 0 && <p className="text-xs text-muted-foreground text-center py-2">Sin resultados</p>}
+                        </div>
+                      </div>
+                    </>)}
+                  </div>
+                  );
+                })()}
               </div>
             </div>
 
@@ -1805,6 +1940,14 @@ export default function ProductosPage() {
                     {presentaciones
                       .map((pres, idx) => ({ pres, idx }))
                       .filter(({ pres }) => !pres._deleted)
+                      .sort((a, b) => {
+                        // Unit (1) first, then Medio Carton (0.5), then boxes
+                        if (a.pres.cantidad === 1 && b.pres.cantidad !== 1) return -1;
+                        if (a.pres.cantidad !== 1 && b.pres.cantidad === 1) return 1;
+                        if (a.pres.cantidad < 1 && b.pres.cantidad >= 1) return -1;
+                        if (a.pres.cantidad >= 1 && b.pres.cantidad < 1) return 1;
+                        return a.pres.cantidad - b.pres.cantidad;
+                      })
                       .map(({ pres, idx }) => {
                         const isUnit = pres.cantidad === 1;
                         const unit = getUnitPresentacion();
@@ -1841,10 +1984,15 @@ export default function ProductosPage() {
                                   const newQty = Number(e.target.value);
                                   updatePresentacion(idx, "cantidad", newQty);
                                   if (!isUnit && unit && newQty > 0) {
-                                    if (newQty < 1) {
-                                      updatePresentacion(idx, "nombre", "Medio Carton");
-                                    } else {
-                                      updatePresentacion(idx, "nombre", `Caja x${newQty}`);
+                                    // Only auto-rename if name follows "Caja xN" pattern or is empty
+                                    const currentName = pres.nombre;
+                                    const isAutoName = !currentName || /^Caja\s*x\d*$/i.test(currentName);
+                                    if (isAutoName) {
+                                      if (newQty < 1) {
+                                        updatePresentacion(idx, "nombre", "Medio Carton");
+                                      } else {
+                                        updatePresentacion(idx, "nombre", `Caja x${newQty}`);
+                                      }
                                     }
                                     updatePresentacion(idx, "costo", unit.costo * newQty);
                                     updatePresentacion(idx, "precio", unit.precio * newQty);
@@ -1970,68 +2118,48 @@ export default function ProductosPage() {
             {/* Section 5: Proveedores - compact */}
             {!isCombo && <div>
               <h3 className="text-sm font-medium mb-3 text-muted-foreground">Proveedores</h3>
-              <div className="border rounded-md p-3 max-h-28 overflow-y-auto">
-                <div className="grid grid-cols-3 gap-x-4 gap-y-1">
+              {selectedProveedores.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 mb-2">
+                  {selectedProveedores.map((id) => {
+                    const prov = proveedores.find((p) => p.id === id);
+                    return prov ? (
+                      <span key={id} className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-primary/10 text-primary border border-primary/20">
+                        {prov.nombre}
+                        <button type="button" onClick={() => toggleProveedor(id)} className="hover:text-destructive ml-0.5">
+                          <X className="w-3 h-3" />
+                        </button>
+                      </span>
+                    ) : null;
+                  })}
+                </div>
+              )}
+              <div className="border rounded-lg p-2 max-h-32 overflow-y-auto">
+                <div className="flex flex-wrap gap-1.5">
                   {proveedores.length === 0 && (
-                    <p className="text-sm text-muted-foreground col-span-3">No hay proveedores cargados</p>
+                    <p className="text-sm text-muted-foreground p-1">No hay proveedores cargados</p>
                   )}
-                  {proveedores.map((prov) => (
-                    <label
-                      key={prov.id}
-                      className="flex items-center gap-2 cursor-pointer py-1 px-1 rounded hover:bg-muted/50"
-                    >
-                      <input
-                        type="checkbox"
-                        className="rounded border-input"
-                        checked={selectedProveedores.includes(prov.id)}
-                        onChange={() => toggleProveedor(prov.id)}
-                      />
-                      <span className="text-sm truncate">{prov.nombre}</span>
-                    </label>
-                  ))}
+                  {proveedores.map((prov) => {
+                    const isSelected = selectedProveedores.includes(prov.id);
+                    return (
+                      <button
+                        key={prov.id}
+                        type="button"
+                        onClick={() => toggleProveedor(prov.id)}
+                        className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
+                          isSelected
+                            ? "bg-primary/10 text-primary border-primary/30"
+                            : "bg-muted/50 text-muted-foreground border-transparent hover:bg-muted hover:border-border"
+                        }`}
+                      >
+                        {prov.nombre}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             </div>
             }
 
-            {/* Description - collapsible */}
-            <div>
-              {showDescription ? (
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <Label className="text-xs text-muted-foreground">Descripcion detallada</Label>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-6 text-xs text-muted-foreground"
-                      onClick={() => { setShowDescription(false); setForm({ ...form, descripcion_detallada: "" }); }}
-                    >
-                      <X className="w-3 h-3 mr-1" />
-                      Quitar
-                    </Button>
-                  </div>
-                  <Textarea
-                    rows={3}
-                    value={form.descripcion_detallada}
-                    onChange={(e) =>
-                      setForm({ ...form, descripcion_detallada: e.target.value })
-                    }
-                    placeholder="Descripcion opcional del producto..."
-                    className="resize-none"
-                  />
-                </div>
-              ) : (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="text-xs text-muted-foreground gap-1.5"
-                  onClick={() => setShowDescription(true)}
-                >
-                  <Plus className="w-3 h-3" />
-                  Agregar descripcion
-                </Button>
-              )}
-            </div>
           </div>
 
           {/* Sticky footer */}
@@ -2206,7 +2334,7 @@ export default function ProductosPage() {
                         <div className="min-w-0 flex-1">
                           <p className="truncate">{it.descripcion}</p>
                           <p className="text-xs text-muted-foreground">
-                            {it.cantidad} {it.unidad_medida || "u."} x {formatCurrency(it.precio_unitario)}
+                            {(it.unidades_por_presentacion ?? 1) > 0 && (it.unidades_por_presentacion ?? 1) < 1 ? it.cantidad * (it.unidades_por_presentacion ?? 1) : it.cantidad} {it.unidad_medida || "u."} x {formatCurrency(it.precio_unitario)}
                           </p>
                         </div>
                         <p className="font-medium shrink-0 ml-3">{formatCurrency(it.subtotal)}</p>

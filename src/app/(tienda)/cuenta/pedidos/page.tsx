@@ -2,13 +2,14 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { ArrowLeft, Package, ChevronDown, ChevronUp, Calendar, Hash, AlertCircle, ShoppingBag } from "lucide-react";
+import { ArrowLeft, Package, ChevronDown, ChevronUp, Calendar, Hash, AlertCircle, ShoppingBag, DollarSign } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 
 interface PedidoItem {
   id: number;
   nombre: string;
   presentacion: string;
+  unidades_por_presentacion?: number;
   cantidad: number;
   precio_unitario: number;
 }
@@ -25,6 +26,8 @@ interface PagoDetalle {
   metodo_pago: string;
   monto: number;
   cuenta_bancaria?: string;
+  fecha?: string;
+  descripcion?: string;
 }
 
 interface VentaRecord {
@@ -35,9 +38,10 @@ interface VentaRecord {
   forma_pago: string;
   total: number;
   origen: string;
-  items: { descripcion: string; cantidad: number; precio_unitario: number; subtotal: number }[];
+  items: { descripcion: string; cantidad: number; precio_unitario: number; subtotal: number; presentacion?: string; unidades_por_presentacion?: number }[];
   notas_credito: NotaCredito[];
   pagos: PagoDetalle[];
+  saldo_pendiente: number;
 }
 
 interface Pedido {
@@ -87,7 +91,7 @@ export default function PedidosPage() {
       // Fetch pedidos tienda
       const { data } = await supabase
         .from("pedidos_tienda")
-        .select("id, numero, created_at, estado, total, pedido_tienda_items(id, nombre, presentacion, cantidad, precio_unitario)")
+        .select("id, numero, created_at, estado, total, pedido_tienda_items(id, nombre, presentacion, cantidad, precio_unitario, unidades_por_presentacion)")
         .eq("cliente_auth_id", id)
         .order("created_at", { ascending: false });
 
@@ -96,7 +100,7 @@ export default function PedidosPage() {
       if (clienteId) {
         const { data: ventas } = await supabase
           .from("ventas")
-          .select("id, numero, tipo_comprobante, fecha, forma_pago, total, origen, venta_items(descripcion, cantidad, precio_unitario, subtotal)")
+          .select("id, numero, tipo_comprobante, fecha, forma_pago, total, origen, venta_items(descripcion, cantidad, precio_unitario, subtotal, presentacion, unidades_por_presentacion)")
           .eq("cliente_id", clienteId)
           .not("tipo_comprobante", "ilike", "Nota de Crédito%")
           .not("tipo_comprobante", "ilike", "Nota de Débito%")
@@ -110,7 +114,7 @@ export default function PedidosPage() {
       if (ventaIds.length > 0) {
         const { data: ncs } = await supabase
           .from("ventas")
-          .select("id, numero, fecha, total, remito_origen_id, venta_items(descripcion, cantidad, precio_unitario, subtotal)")
+          .select("id, numero, fecha, total, remito_origen_id, venta_items(descripcion, cantidad, precio_unitario, subtotal, presentacion, unidades_por_presentacion)")
           .in("remito_origen_id", ventaIds)
           .ilike("tipo_comprobante", "Nota de Crédito%");
         for (const nc of ncs || []) {
@@ -131,9 +135,10 @@ export default function PedidosPage() {
       if (ventaIds.length > 0) {
         const { data: movs } = await supabase
           .from("caja_movimientos")
-          .select("referencia_id, metodo_pago, monto, cuenta_bancaria")
+          .select("referencia_id, metodo_pago, monto, cuenta_bancaria, created_at, descripcion")
           .in("referencia_id", ventaIds)
-          .eq("referencia_tipo", "venta");
+          .eq("referencia_tipo", "venta")
+          .order("created_at", { ascending: true });
         for (const m of movs || []) {
           const key = m.referencia_id;
           if (!pagosMap[key]) pagosMap[key] = [];
@@ -141,6 +146,8 @@ export default function PedidosPage() {
             metodo_pago: m.metodo_pago,
             monto: m.monto,
             cuenta_bancaria: m.cuenta_bancaria || undefined,
+            fecha: m.created_at || undefined,
+            descripcion: m.descripcion || undefined,
           });
         }
       }
@@ -162,6 +169,18 @@ export default function PedidosPage() {
         }
       }
 
+      // Fetch pending balances from cuenta_corriente
+      const saldoMap: Record<string, number> = {};
+      if (ventaIds.length > 0) {
+        const { data: ccSaldos } = await supabase
+          .from("cuenta_corriente")
+          .select("venta_id, debe, haber")
+          .in("venta_id", ventaIds);
+        for (const cc of ccSaldos || []) {
+          saldoMap[cc.venta_id] = (saldoMap[cc.venta_id] || 0) + (cc.debe || 0) - (cc.haber || 0);
+        }
+      }
+
       // Build venta records with NCs and payment info
       const ventaRecords: Record<string, VentaRecord> = {};
       for (const v of allVentas) {
@@ -176,6 +195,7 @@ export default function PedidosPage() {
           items: (v as any).venta_items || [],
           notas_credito: ncMap[v.id] || [],
           pagos: pagosMap[v.id] || [],
+          saldo_pendiente: Math.max(0, saldoMap[v.id] || 0),
         };
       }
 
@@ -200,13 +220,20 @@ export default function PedidosPage() {
     fetchData();
   }, []);
 
-  const formatDate = (dateStr: string) => {
+  const formatDate = (dateStr: string, includeTime = false) => {
     const date = new Date(dateStr);
-    return date.toLocaleDateString("es-AR", {
+    const datePart = date.toLocaleDateString("es-AR", {
       day: "numeric",
       month: "short",
       year: "numeric",
     });
+    if (!includeTime) return datePart;
+    const timePart = date.toLocaleTimeString("es-AR", {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+    return `${datePart}, ${timePart}`;
   };
 
   return (
@@ -230,6 +257,31 @@ export default function PedidosPage() {
           </p>
         </div>
       </div>
+
+      {/* Debt summary */}
+      {(() => {
+        const deudasPedidos = pedidos.filter((p) => p.venta && p.venta.saldo_pendiente > 0).map((p) => ({ numero: p.venta!.numero, tipo: p.venta!.tipo_comprobante, monto: p.venta!.saldo_pendiente }));
+        const deudasPOS = ventasPOS.filter((v) => v.saldo_pendiente > 0).map((v) => ({ numero: v.numero, tipo: v.tipo_comprobante, monto: v.saldo_pendiente }));
+        const deudas = [...deudasPedidos, ...deudasPOS];
+        const totalDeuda = deudas.reduce((s, d) => s + d.monto, 0);
+        if (totalDeuda <= 0) return null;
+        return (
+          <div className="mb-6 bg-gradient-to-r from-orange-50 to-amber-50 border border-orange-200 rounded-2xl p-5">
+            <div className="flex items-center gap-2 mb-3">
+              <DollarSign className="w-5 h-5 text-orange-600" />
+              <span className="font-bold text-orange-800">Saldo pendiente: {formatPrice(totalDeuda)}</span>
+            </div>
+            <div className="space-y-1.5">
+              {deudas.map((d) => (
+                <div key={d.numero} className="flex justify-between items-center text-sm">
+                  <span className="text-orange-700">{d.tipo} {d.numero}</span>
+                  <span className="font-semibold text-orange-800">{formatPrice(d.monto)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
 
       {loading ? (
         <div className="space-y-4">
@@ -286,10 +338,20 @@ export default function PedidosPage() {
                           <span className={`w-1.5 h-1.5 rounded-full ${badge.dot}`} />
                           <span className="capitalize">{pedido.estado}</span>
                         </span>
+                        <span className="inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full bg-pink-50 text-pink-700">
+                          <span className="w-1.5 h-1.5 rounded-full bg-pink-400" />
+                          Pedido Web
+                        </span>
                         {pedido.venta?.notas_credito && pedido.venta.notas_credito.length > 0 && (
                           <span className="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full bg-red-50 text-red-600">
                             <AlertCircle className="w-3 h-3" />
                             NC
+                          </span>
+                        )}
+                        {pedido.venta && pedido.venta.saldo_pendiente > 0 && (
+                          <span className="inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-full bg-orange-50 text-orange-700 border border-orange-200">
+                            <DollarSign className="w-3 h-3" />
+                            Saldo pendiente: {formatPrice(pedido.venta.saldo_pendiente)}
                           </span>
                         )}
                       </div>
@@ -298,7 +360,7 @@ export default function PedidosPage() {
                       <div className="flex items-center gap-3 text-sm text-gray-400">
                         <span className="flex items-center gap-1.5">
                           <Calendar className="w-3.5 h-3.5" />
-                          {formatDate(pedido.created_at)}
+                          {formatDate(pedido.created_at, true)}
                         </span>
                         <span className="text-gray-200">|</span>
                         <span>
@@ -348,16 +410,45 @@ export default function PedidosPage() {
                           </tr>
                         </thead>
                         <tbody>
-                          {pedido.items.map((item) => (
+                          {pedido.items.map((item) => {
+                            const isMedio = item.presentacion && (item.presentacion.toLowerCase().includes("medio") || (item.unidades_por_presentacion != null && item.unidades_por_presentacion <= 0.5 && item.unidades_por_presentacion > 0));
+                            const isBox = item.presentacion && item.presentacion !== "Unidad" && (item.unidades_por_presentacion || 1) > 1;
+                            const isCombo = item.nombre.toLowerCase().includes("combo");
+                            const unitPrice = isMedio ? item.precio_unitario / (item.unidades_por_presentacion || 0.5) : isBox ? item.precio_unitario / (item.unidades_por_presentacion || 1) : item.precio_unitario;
+                            // Clean up name: remove duplicate presentation info
+                            let displayName = item.nombre
+                              .replace(/\s*[-–]\s*Unidad(\s*\(Unidad\))?$/, "")
+                              .replace(/\s*\(Unidad\)$/, "")
+                              .replace(/(\([^)]+\))\s*\1/gi, "$1")
+                              .replace(/Caja\s*\(?x?0\.5\)?/gi, "Medio Cartón")
+                              .replace(/(Medio\s*Cart[oó]n)\s*\(?\s*Medio\s*Cart[oó]n\s*\)?/gi, "$1");
+                            // Don't append presentation if already in name
+                            const nameAlreadyHasPres = (isBox || isMedio) && displayName.toLowerCase().includes(isMedio ? "medio" : item.presentacion.toLowerCase());
+                            if (isBox && !nameAlreadyHasPres) {
+                              const presClean = item.presentacion.replace(/\s*\([^)]*\)\s*$/, "");
+                              displayName = `${displayName} (${presClean})`;
+                            }
+                            return (
                             <tr key={item.id} className="border-t border-gray-50">
-                              <td className="py-3 text-gray-700 font-medium">{item.nombre}{item.presentacion && item.presentacion !== "Unidad" ? ` (${item.presentacion})` : ""}</td>
-                              <td className="py-3 text-center text-gray-500">{item.cantidad}</td>
-                              <td className="py-3 text-right text-gray-500">{formatPrice(item.precio_unitario)}</td>
+                              <td className="py-3 text-gray-700 font-medium">
+                                {displayName}
+                                {isCombo && (item.unidades_por_presentacion || 1) > 1 && (
+                                  <span className="block text-[10px] text-gray-400 mt-0.5">
+                                    Combo de {item.unidades_por_presentacion} unidades
+                                  </span>
+                                )}
+                              </td>
+                              <td className="py-3 text-center text-gray-500">{isMedio ? item.cantidad * (item.unidades_por_presentacion || 0.5) : item.cantidad}</td>
+                              <td className="py-3 text-right text-gray-500">
+                                {formatPrice(unitPrice)}
+                                {(isBox || isCombo) && (item.unidades_por_presentacion || 1) > 1 && <span className="block text-[10px] text-gray-400">c/u</span>}
+                              </td>
                               <td className="py-3 text-right font-semibold text-gray-900">
                                 {formatPrice(item.precio_unitario * item.cantidad)}
                               </td>
                             </tr>
-                          ))}
+                            );
+                          })}
                         </tbody>
                         <tfoot>
                           <tr className="border-t border-gray-200">
@@ -373,22 +464,46 @@ export default function PedidosPage() {
                     )}
 
                     {/* Payment breakdown */}
-                    {pedido.venta && pedido.venta.pagos.length > 0 && (
+                    {pedido.venta && pedido.venta.pagos.length > 0 && (() => {
+                      // Filter: hide "Cuenta Corriente" entries if debt is fully paid
+                      const pagos = pedido.venta.saldo_pendiente <= 0
+                        ? pedido.venta.pagos.filter((p) => p.metodo_pago !== "Cuenta Corriente")
+                        : pedido.venta.pagos;
+                      if (pagos.length === 0) return null;
+                      return (
                       <div className="mt-3 bg-gray-50 rounded-xl p-4">
                         <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Detalle de pago</p>
-                        <div className="space-y-1.5">
-                          {pedido.venta.pagos.map((p, idx) => (
-                            <div key={idx} className="flex justify-between text-sm">
-                              <span className="text-gray-600">
-                                {p.metodo_pago}
+                        <div className="space-y-2">
+                          {pagos.map((p, idx) => {
+                            const isHojaRuta = p.descripcion && (p.descripcion.toLowerCase().includes("hoja de ruta") || p.descripcion.toLowerCase().includes("entrega"));
+                            const isCobro = p.descripcion && p.descripcion.toLowerCase().includes("cobro");
+                            return (
+                            <div key={idx} className="flex justify-between items-start text-sm">
+                              <div>
+                                <span className="text-gray-700 font-medium">{p.metodo_pago}</span>
                                 {p.cuenta_bancaria && <span className="text-gray-400 text-xs ml-1">→ {p.cuenta_bancaria}</span>}
-                              </span>
-                              <span className="font-medium text-gray-900">{formatPrice(p.monto)}</span>
+                                {p.fecha && (
+                                  <span className="block text-[10px] text-gray-400 mt-0.5">
+                                    {new Date(p.fecha).toLocaleDateString("es-AR", { day: "numeric", month: "short", year: "numeric" })}{" "}
+                                    {new Date(p.fecha).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit", hour12: false })}
+                                    {isHojaRuta ? " — Pago al momento de entrega" : isCobro ? " — Cobro posterior" : ""}
+                                  </span>
+                                )}
+                              </div>
+                              <span className="font-semibold text-gray-900">{formatPrice(p.monto)}</span>
                             </div>
-                          ))}
+                            );
+                          })}
                         </div>
+                        {pedido.venta.saldo_pendiente > 0 && (
+                          <div className="mt-2 pt-2 border-t border-orange-200 flex justify-between text-sm">
+                            <span className="text-orange-600 font-medium">Saldo pendiente</span>
+                            <span className="font-bold text-orange-600">{formatPrice(pedido.venta.saldo_pendiente)}</span>
+                          </div>
+                        )}
                       </div>
-                    )}
+                      );
+                    })()}
                     {pedido.venta && pedido.venta.pagos.length === 0 && pedido.venta.forma_pago && (
                       <div className="mt-3 bg-gray-50 rounded-xl p-4">
                         <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Forma de pago</p>
@@ -413,7 +528,7 @@ export default function PedidosPage() {
                               <div className="space-y-1">
                                 {nc.items.map((ni, idx) => (
                                   <div key={idx} className="flex justify-between text-xs text-red-600">
-                                    <span>{ni.cantidad}x {ni.descripcion.replace(/\s*\(Unidad\)$/, "")}</span>
+                                    <span>{ni.cantidad}x {ni.descripcion.replace(/\s*[-–]\s*Unidad(\s*\(Unidad\))?$/, "").replace(/\s*\(Unidad\)$/, "").replace(/(\([^)]+\))\s*\1/gi, "$1")}</span>
                                     <span>-{formatPrice(ni.subtotal)}</span>
                                   </div>
                                 ))}
@@ -463,14 +578,20 @@ export default function PedidosPage() {
                               <Hash className="w-3.5 h-3.5 text-gray-400" />
                               <span className="font-mono font-semibold text-sm">{v.numero}</span>
                             </div>
-                            <span className="inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full bg-indigo-50 text-indigo-700">
-                              <span className="w-1.5 h-1.5 rounded-full bg-indigo-400" />
+                            <span className="inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full bg-blue-50 text-blue-700">
+                              <span className="w-1.5 h-1.5 rounded-full bg-blue-400" />
                               {v.tipo_comprobante}
                             </span>
                             {hasNC && (
                               <span className="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full bg-red-50 text-red-600">
                                 <AlertCircle className="w-3 h-3" />
                                 NC
+                              </span>
+                            )}
+                            {v.saldo_pendiente > 0 && (
+                              <span className="inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-full bg-orange-50 text-orange-700 border border-orange-200">
+                                <DollarSign className="w-3 h-3" />
+                                Saldo pendiente: {formatPrice(v.saldo_pendiente)}
                               </span>
                             )}
                           </div>
@@ -516,14 +637,38 @@ export default function PedidosPage() {
                               </tr>
                             </thead>
                             <tbody>
-                              {v.items.map((item, idx) => (
+                              {v.items.map((item, idx) => {
+                                const isMedioV = item.presentacion && (item.presentacion.toLowerCase().includes("medio") || (item.unidades_por_presentacion != null && item.unidades_por_presentacion <= 0.5 && item.unidades_por_presentacion > 0));
+                                const isBox = item.presentacion && item.presentacion !== "Unidad" && (item.unidades_por_presentacion || 1) > 1;
+                                const isCombo = (item.descripcion || "").toLowerCase().includes("combo");
+                                const unitPrice = isMedioV ? item.precio_unitario / (item.unidades_por_presentacion || 0.5) : isBox ? item.precio_unitario / (item.unidades_por_presentacion || 1) : item.precio_unitario;
+                                // Clean "(Unidad)" and duplicate presentation from description
+                                const displayName = (item.descripcion || "")
+                                  .replace(/\s*[-–]\s*Unidad(\s*\(Unidad\))?$/, "")
+                                  .replace(/\s*\(Unidad\)$/, "")
+                                  .replace(/(\([^)]+\))\s*\1/gi, "$1")
+                                  .replace(/\s*\(Caja \(x[\d.]+\)\)$/, "")
+                                  .replace(/Caja\s*\(?x?0\.5\)?/gi, "Medio Cartón")
+                                  .replace(/(Medio\s*Cart[oó]n)\s*\(?\s*Medio\s*Cart[oó]n\s*\)?/gi, "$1");
+                                return (
                                 <tr key={idx} className="border-t border-gray-50">
-                                  <td className="py-3 text-gray-700 font-medium">{item.descripcion}</td>
-                                  <td className="py-3 text-center text-gray-500">{item.cantidad}</td>
-                                  <td className="py-3 text-right text-gray-500">{formatPrice(item.precio_unitario)}</td>
+                                  <td className="py-3 text-gray-700 font-medium">
+                                    {displayName}
+                                    {isCombo && (item.unidades_por_presentacion || 1) > 1 && (
+                                      <span className="block text-[10px] text-gray-400 mt-0.5">
+                                        Combo de {item.unidades_por_presentacion} unidades
+                                      </span>
+                                    )}
+                                  </td>
+                                  <td className="py-3 text-center text-gray-500">{isMedioV ? item.cantidad * (item.unidades_por_presentacion || 0.5) : item.cantidad}</td>
+                                  <td className="py-3 text-right text-gray-500">
+                                    {formatPrice(unitPrice)}
+                                    {(isBox || isCombo) && (item.unidades_por_presentacion || 1) > 1 && <span className="block text-[10px] text-gray-400">c/u</span>}
+                                  </td>
                                   <td className="py-3 text-right font-semibold text-gray-900">{formatPrice(item.subtotal)}</td>
                                 </tr>
-                              ))}
+                                );
+                              })}
                             </tbody>
                             <tfoot>
                               <tr className="border-t border-gray-200">
@@ -535,22 +680,45 @@ export default function PedidosPage() {
                         )}
 
                         {/* Payment breakdown */}
-                        {v.pagos.length > 0 && (
+                        {v.pagos.length > 0 && (() => {
+                          const pagos = v.saldo_pendiente <= 0
+                            ? v.pagos.filter((p) => p.metodo_pago !== "Cuenta Corriente")
+                            : v.pagos;
+                          if (pagos.length === 0) return null;
+                          return (
                           <div className="mt-3 bg-gray-50 rounded-xl p-4">
                             <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Detalle de pago</p>
-                            <div className="space-y-1.5">
-                              {v.pagos.map((p, idx) => (
-                                <div key={idx} className="flex justify-between text-sm">
-                                  <span className="text-gray-600">
-                                    {p.metodo_pago}
+                            <div className="space-y-2">
+                              {pagos.map((p, idx) => {
+                                const isHojaRuta = p.descripcion && (p.descripcion.toLowerCase().includes("hoja de ruta") || p.descripcion.toLowerCase().includes("entrega"));
+                                const isCobro = p.descripcion && p.descripcion.toLowerCase().includes("cobro");
+                                return (
+                                <div key={idx} className="flex justify-between items-start text-sm">
+                                  <div>
+                                    <span className="text-gray-700 font-medium">{p.metodo_pago}</span>
                                     {p.cuenta_bancaria && <span className="text-gray-400 text-xs ml-1">→ {p.cuenta_bancaria}</span>}
-                                  </span>
-                                  <span className="font-medium text-gray-900">{formatPrice(p.monto)}</span>
+                                    {p.fecha && (
+                                      <span className="block text-[10px] text-gray-400 mt-0.5">
+                                        {new Date(p.fecha).toLocaleDateString("es-AR", { day: "numeric", month: "short", year: "numeric" })}{" "}
+                                        {new Date(p.fecha).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit", hour12: false })}
+                                        {isHojaRuta ? " — Pago al momento de entrega" : isCobro ? " — Cobro posterior" : ""}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <span className="font-semibold text-gray-900">{formatPrice(p.monto)}</span>
                                 </div>
-                              ))}
+                                );
+                              })}
                             </div>
+                            {v.saldo_pendiente > 0 && (
+                              <div className="mt-2 pt-2 border-t border-orange-200 flex justify-between text-sm">
+                                <span className="text-orange-600 font-medium">Saldo pendiente</span>
+                                <span className="font-bold text-orange-600">{formatPrice(v.saldo_pendiente)}</span>
+                              </div>
+                            )}
                           </div>
-                        )}
+                          );
+                        })()}
                         {v.pagos.length === 0 && v.forma_pago && (
                           <div className="mt-3 bg-gray-50 rounded-xl p-4">
                             <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Forma de pago</p>
@@ -574,7 +742,7 @@ export default function PedidosPage() {
                                   <div className="space-y-1">
                                     {nc.items.map((ni, idx) => (
                                       <div key={idx} className="flex justify-between text-xs text-red-600">
-                                        <span>{ni.cantidad}x {ni.descripcion.replace(/\s*\(Unidad\)$/, "")}</span>
+                                        <span>{ni.cantidad}x {ni.descripcion.replace(/\s*[-–]\s*Unidad(\s*\(Unidad\))?$/, "").replace(/\s*\(Unidad\)$/, "").replace(/(\([^)]+\))\s*\1/gi, "$1")}</span>
                                         <span>-{formatPrice(ni.subtotal)}</span>
                                       </div>
                                     ))}

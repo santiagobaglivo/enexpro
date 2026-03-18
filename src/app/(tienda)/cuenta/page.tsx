@@ -5,6 +5,13 @@ import Link from "next/link";
 import { User, Package, MapPin, LogOut, AlertCircle } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 
+const PROVINCIAS = [
+  "Buenos Aires", "CABA", "Catamarca", "Chaco", "Chubut", "Córdoba", "Corrientes",
+  "Entre Ríos", "Formosa", "Jujuy", "La Pampa", "La Rioja", "Mendoza", "Misiones",
+  "Neuquén", "Río Negro", "Salta", "San Juan", "San Luis", "Santa Cruz", "Santa Fe",
+  "Santiago del Estero", "Tierra del Fuego", "Tucumán",
+];
+
 interface ClienteAuth {
   id: number;
   nombre: string;
@@ -17,6 +24,7 @@ export default function CuentaPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [orderCount, setOrderCount] = useState(0);
+  const [logoUrl, setLogoUrl] = useState<string>("");
 
   // Login fields
   const [loginEmail, setLoginEmail] = useState("");
@@ -26,10 +34,19 @@ export default function CuentaPage() {
   const [regNombre, setRegNombre] = useState("");
   const [regEmail, setRegEmail] = useState("");
   const [regTelefono, setRegTelefono] = useState("");
+  const [regDomicilio, setRegDomicilio] = useState("");
+  const [regLocalidad, setRegLocalidad] = useState("");
+  const [regProvincia, setRegProvincia] = useState("");
+  const [regCodigoPostal, setRegCodigoPostal] = useState("");
   const [regPassword, setRegPassword] = useState("");
   const [regConfirm, setRegConfirm] = useState("");
 
   useEffect(() => {
+    // Load logo from tienda_config
+    supabase.from("tienda_config").select("logo_url").limit(1).single().then(({ data }) => {
+      if (data?.logo_url) setLogoUrl(data.logo_url);
+    });
+
     const stored = localStorage.getItem("cliente_auth");
     if (stored) {
       const parsed = JSON.parse(stored);
@@ -99,6 +116,10 @@ export default function CuentaPage() {
           nombre: regNombre,
           email: regEmail,
           telefono: regTelefono || null,
+          domicilio: regDomicilio || null,
+          localidad: regLocalidad || null,
+          provincia: regProvincia || null,
+          codigo_postal: regCodigoPostal || null,
           situacion_iva: "Consumidor final",
           origen: "tienda",
         })
@@ -146,11 +167,17 @@ export default function CuentaPage() {
           <div className="bg-white rounded-2xl shadow-lg border border-gray-100 overflow-hidden">
             {/* Logo */}
             <div className="flex justify-center pt-8 pb-4">
-              <img
-                src="/images/dulcesur-logo.png"
-                alt="DulceSur"
-                className="h-16 object-contain"
-              />
+              {logoUrl ? (
+                <img
+                  src={logoUrl}
+                  alt="Logo"
+                  className="h-16 object-contain"
+                />
+              ) : (
+                <div className="w-16 h-16 rounded-xl bg-pink-600 flex items-center justify-center text-white font-bold text-2xl">
+                  C
+                </div>
+              )}
             </div>
 
             <div className="px-8 pb-8">
@@ -272,6 +299,67 @@ export default function CuentaPage() {
                       className={inputClass}
                     />
                   </div>
+
+                  {/* Address section */}
+                  <div className="border-t border-gray-100 pt-4 mt-2">
+                    <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Dirección de envío</p>
+                    <div className="space-y-3">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                          Dirección (calle y número)
+                        </label>
+                        <input
+                          type="text"
+                          placeholder="Av. San Martín 1234"
+                          value={regDomicilio}
+                          onChange={(e) => setRegDomicilio(e.target.value)}
+                          className={inputClass}
+                        />
+                      </div>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                            Localidad
+                          </label>
+                          <input
+                            type="text"
+                            placeholder="Ciudad"
+                            value={regLocalidad}
+                            onChange={(e) => setRegLocalidad(e.target.value)}
+                            className={inputClass}
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                            Código postal
+                          </label>
+                          <input
+                            type="text"
+                            placeholder="1000"
+                            value={regCodigoPostal}
+                            onChange={(e) => setRegCodigoPostal(e.target.value)}
+                            className={inputClass}
+                          />
+                        </div>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                          Provincia
+                        </label>
+                        <select
+                          value={regProvincia}
+                          onChange={(e) => setRegProvincia(e.target.value)}
+                          className={inputClass}
+                        >
+                          <option value="">Seleccionar provincia</option>
+                          {PROVINCIAS.map((p) => (
+                            <option key={p} value={p}>{p}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1.5">
                       Contraseña

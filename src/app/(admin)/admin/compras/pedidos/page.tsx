@@ -121,6 +121,12 @@ export default function PedidosProveedorPage() {
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
   const [filterEstado, setFilterEstado] = useState("all");
+  const [pedFilterMode, setPedFilterMode] = useState<"day" | "month" | "range" | "all">("all");
+  const [pedFilterDay, setPedFilterDay] = useState(new Date().toISOString().split("T")[0]);
+  const [pedFilterMonth, setPedFilterMonth] = useState(String(new Date().getMonth() + 1));
+  const [pedFilterYear, setPedFilterYear] = useState(String(new Date().getFullYear()));
+  const [pedFilterFrom, setPedFilterFrom] = useState(new Date().toISOString().split("T")[0]);
+  const [pedFilterTo, setPedFilterTo] = useState(new Date().toISOString().split("T")[0]);
 
   // New / edit pedido state
   const [mode, setMode] = useState<"list" | "new" | "detail" | "generate">("list");
@@ -129,6 +135,7 @@ export default function PedidosProveedorPage() {
   const [items, setItems] = useState<SuggestedItem[]>([]);
   const [observacion, setObservacion] = useState("");
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
   const [suggesting, setSuggesting] = useState(false);
   const [successMsg, setSuccessMsg] = useState("");
 
@@ -150,11 +157,26 @@ export default function PedidosProveedorPage() {
 
   const fetchData = useCallback(async () => {
     setLoading(true);
+    let pedQuery = supabase
+      .from("pedidos_proveedor")
+      .select("*, proveedores(nombre)")
+      .order("fecha", { ascending: false });
+
+    if (pedFilterMode === "day") {
+      pedQuery = pedQuery.eq("fecha", pedFilterDay);
+    } else if (pedFilterMode === "month") {
+      const m = pedFilterMonth.padStart(2, "0");
+      const start = `${pedFilterYear}-${m}-01`;
+      const nextMonth = Number(pedFilterMonth) === 12 ? 1 : Number(pedFilterMonth) + 1;
+      const nextYear = Number(pedFilterMonth) === 12 ? Number(pedFilterYear) + 1 : Number(pedFilterYear);
+      const end = `${nextYear}-${String(nextMonth).padStart(2, "0")}-01`;
+      pedQuery = pedQuery.gte("fecha", start).lt("fecha", end);
+    } else if (pedFilterMode === "range" && pedFilterFrom && pedFilterTo) {
+      pedQuery = pedQuery.gte("fecha", pedFilterFrom).lte("fecha", pedFilterTo);
+    }
+
     const [{ data: ped }, { data: prov }, { data: cats }] = await Promise.all([
-      supabase
-        .from("pedidos_proveedor")
-        .select("*, proveedores(nombre)")
-        .order("fecha", { ascending: false }),
+      pedQuery,
       supabase.from("proveedores").select("id, nombre").eq("activo", true).order("nombre"),
       supabase.from("categorias").select("id, nombre").order("nombre"),
     ]);
@@ -162,7 +184,7 @@ export default function PedidosProveedorPage() {
     setProveedores((prov as Proveedor[]) || []);
     setCategorias((cats as Categoria[]) || []);
     setLoading(false);
-  }, []);
+  }, [pedFilterMode, pedFilterDay, pedFilterMonth, pedFilterYear, pedFilterFrom, pedFilterTo]);
 
   useEffect(() => {
     fetchData();
@@ -235,9 +257,11 @@ export default function PedidosProveedorPage() {
   const savePedido = async (estado: "Borrador" | "Enviado") => {
     if (!selectedProveedorId || items.length === 0) return;
     setSaving(true);
+    setSaveError("");
 
     try {
-      const { data: numData } = await supabase.rpc("next_numero", { p_tipo: "pedido" });
+      const { data: numData, error: numError } = await supabase.rpc("next_numero", { p_tipo: "pedido" });
+      if (numError) console.warn("next_numero error:", numError);
       const numero = numData || "PED-0000";
 
       const { data: pedido, error } = await supabase
@@ -255,6 +279,7 @@ export default function PedidosProveedorPage() {
 
       if (error || !pedido) {
         console.error("Error saving pedido:", error);
+        setSaveError(error?.message || "Error al guardar el pedido. Verifica que la tabla pedidos_proveedor exista en la base de datos.");
         setSaving(false);
         return;
       }
@@ -284,8 +309,9 @@ export default function PedidosProveedorPage() {
           : `Pedido ${numero} confirmado correctamente`
       );
       setTimeout(() => setSuccessMsg(""), 4000);
-    } catch (err) {
+    } catch (err: any) {
       console.error("Error saving pedido:", err);
+      setSaveError(err?.message || "Error inesperado al guardar el pedido.");
     } finally {
       setSaving(false);
     }
@@ -582,8 +608,11 @@ export default function PedidosProveedorPage() {
                   placeholder="Notas adicionales para el pedido..."
                 />
               </div>
+              {saveError && (
+                <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-700">{saveError}</div>
+              )}
               <div className="flex justify-end gap-2">
-                <Button variant="outline" onClick={() => { resetForm(); setMode("list"); }}>
+                <Button variant="outline" onClick={() => { resetForm(); setSaveError(""); setMode("list"); }}>
                   Cancelar
                 </Button>
                 <Button variant="secondary" onClick={() => savePedido("Borrador")} disabled={saving}>
@@ -866,7 +895,7 @@ export default function PedidosProveedorPage() {
       </div>
 
       {/* Filters */}
-      <div className="flex flex-col sm:flex-row gap-3">
+      <div className="flex flex-col sm:flex-row gap-3 flex-wrap items-end">
         <div className="relative flex-1 max-w-md">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
           <Input placeholder="Buscar pedido o proveedor..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="pl-9" />
@@ -879,6 +908,45 @@ export default function PedidosProveedorPage() {
             <TabsTrigger value="Recibido">Recibido</TabsTrigger>
           </TabsList>
         </Tabs>
+        <div className="flex items-end gap-2">
+          <Select value={pedFilterMode} onValueChange={(v) => setPedFilterMode((v ?? "all") as "day" | "month" | "range" | "all")}>
+            <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Todos</SelectItem>
+              <SelectItem value="day">Día</SelectItem>
+              <SelectItem value="month">Mensual</SelectItem>
+              <SelectItem value="range">Entre fechas</SelectItem>
+            </SelectContent>
+          </Select>
+          {pedFilterMode === "day" && (
+            <Input type="date" value={pedFilterDay} onChange={(e) => setPedFilterDay(e.target.value)} className="w-40" />
+          )}
+          {pedFilterMode === "month" && (
+            <>
+              <Select value={pedFilterMonth} onValueChange={(v) => setPedFilterMonth(v ?? "1")}>
+                <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"].map((m, i) => (
+                    <SelectItem key={i} value={String(i + 1)}>{m}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Input type="number" value={pedFilterYear} onChange={(e) => setPedFilterYear(e.target.value)} className="w-20" />
+            </>
+          )}
+          {pedFilterMode === "range" && (
+            <>
+              <div className="flex items-center gap-1">
+                <Label className="text-xs text-muted-foreground">Desde</Label>
+                <Input type="date" value={pedFilterFrom} onChange={(e) => setPedFilterFrom(e.target.value)} className="w-40" />
+              </div>
+              <div className="flex items-center gap-1">
+                <Label className="text-xs text-muted-foreground">Hasta</Label>
+                <Input type="date" value={pedFilterTo} onChange={(e) => setPedFilterTo(e.target.value)} className="w-40" />
+              </div>
+            </>
+          )}
+        </div>
       </div>
 
       {/* Table */}

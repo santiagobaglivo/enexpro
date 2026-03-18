@@ -20,6 +20,7 @@ import {
   ChevronRight,
   Plus,
   Loader2,
+  DollarSign,
 } from "lucide-react";
 
 interface CartItem {
@@ -28,6 +29,8 @@ interface CartItem {
   imagen: string;
   presentacion: string;
   precio: number;
+  precio_original?: number;
+  descuento?: number;
   cantidad: number;
 }
 
@@ -154,6 +157,10 @@ export default function CheckoutPage() {
   // Config
   const [config, setConfig] = useState<TiendaConfig | null>(null);
 
+  // Saldo pendiente
+  const [saldoPendiente, setSaldoPendiente] = useState(0);
+  const [deudasDetalle, setDeudasDetalle] = useState<{ numero: string; monto: number }[]>([]);
+
   // Validation errors
   const [errors, setErrors] = useState<string[]>([]);
 
@@ -216,6 +223,90 @@ export default function CheckoutPage() {
                 setShowNewAddress(true);
               }
             });
+
+          // Fetch client profile data from clientes table and pre-fill fields
+          supabase
+            .from("clientes_auth")
+            .select("cliente_id")
+            .eq("id", parsed.id)
+            .single()
+            .then(async ({ data: authRec }) => {
+              if (!authRec?.cliente_id) return;
+              const { data: cli } = await supabase.from("clientes").select("nombre, email, telefono, domicilio, localidad, provincia, codigo_postal, saldo").eq("id", authRec.cliente_id).single();
+              if (cli) {
+                // Pre-fill contact fields from clientes table (more reliable than localStorage)
+                if (cli.nombre) {
+                  const parts = cli.nombre.split(" ");
+                  setNombre(parts[0] || "");
+                  setApellido(parts.slice(1).join(" ") || "");
+                }
+                if (cli.email) setEmail(cli.email);
+                if (cli.telefono) setTelefono(cli.telefono);
+
+                // Pre-fill address form from clientes table when no saved addresses
+                supabase
+                  .from("cliente_direcciones")
+                  .select("id")
+                  .eq("cliente_auth_id", parsed.id)
+                  .then(({ data: dirData }) => {
+                    if (!dirData || dirData.length === 0) {
+                      // No saved addresses: pre-fill the "Nueva dirección" form
+                      if (cli.domicilio || cli.localidad || cli.provincia || cli.codigo_postal) {
+                        // Parse domicilio into calle + numero if possible (e.g. "Av. San Martin 1234")
+                        let calle = cli.domicilio || "";
+                        let numero = "";
+                        if (calle) {
+                          const match = calle.match(/^(.+?)\s+(\d+)\s*$/);
+                          if (match) {
+                            calle = match[1];
+                            numero = match[2];
+                          }
+                        }
+                        setAddr({
+                          calle,
+                          numero,
+                          piso: "",
+                          departamento: "",
+                          localidad: cli.localidad || "",
+                          provincia: cli.provincia || "",
+                          codigo_postal: cli.codigo_postal || "",
+                          referencia: "",
+                        });
+                      }
+                    }
+                  });
+              }
+              const saldo = cli?.saldo || 0;
+              if (saldo > 0) {
+                setSaldoPendiente(saldo);
+                // Fetch deudas detail
+                const { data: ccDeudas } = await supabase
+                  .from("cuenta_corriente")
+                  .select("comprobante, debe, haber, venta_id")
+                  .eq("cliente_id", authRec.cliente_id);
+                const ventaDeudas: Record<string, number> = {};
+                for (const cc of ccDeudas || []) {
+                  if (cc.venta_id) {
+                    ventaDeudas[cc.venta_id] = (ventaDeudas[cc.venta_id] || 0) + (cc.debe || 0) - (cc.haber || 0);
+                  }
+                }
+                const deudas = Object.entries(ventaDeudas)
+                  .filter(([, m]) => m > 0)
+                  .map(([, m]) => ({ numero: "", monto: m }));
+                // Get venta numbers
+                const ventaIdsWithDebt = Object.entries(ventaDeudas).filter(([, m]) => m > 0).map(([id]) => id);
+                if (ventaIdsWithDebt.length > 0) {
+                  const { data: ventas } = await supabase.from("ventas").select("id, numero, tipo_comprobante").in("id", ventaIdsWithDebt);
+                  const detalles = (ventas || []).map((v: any) => ({
+                    numero: `${v.tipo_comprobante} ${v.numero}`,
+                    monto: ventaDeudas[v.id] || 0,
+                  }));
+                  setDeudasDetalle(detalles);
+                } else {
+                  setDeudasDetalle(deudas);
+                }
+              }
+            });
         }
       } catch {}
     } else {
@@ -235,6 +326,7 @@ export default function CheckoutPage() {
   }, [loadConfig]);
 
   const subtotal = items.reduce((s, i) => s + i.precio * i.cantidad, 0);
+  const totalSavings = items.reduce((s, i) => i.precio_original ? s + (i.precio_original - i.precio) * i.cantidad : s, 0);
   const costoEnvioBase = 500;
   const envioGratis =
     metodoEntrega === "retiro" ||
@@ -364,27 +456,35 @@ export default function CheckoutPage() {
         observacion: observacion || null,
         entregado: false,
         origen: "tienda",
+        metodo_entrega: metodoEntrega === "retiro" ? "retiro" : "envio",
       }).select("id").single();
 
       // Insert venta items
       if (venta) {
-        const ventaItemRows = items.map((item) => ({
-          venta_id: venta.id,
-          producto_id: item.id.split("_")[0],
-          descripcion: `${item.nombre} (${item.presentacion || "Unidad"})`,
-          cantidad: item.cantidad,
-          precio_unitario: item.precio,
-          subtotal: item.precio * item.cantidad,
-          unidad_medida: item.presentacion || "Unidad",
-          presentacion: item.presentacion || "Unidad",
-        }));
+        const ventaItemRows = items.map((item) => {
+          const isMedio = item.id.includes("Medio Cartón") || (item.presentacion && item.presentacion.toLowerCase().includes("medio"));
+          const boxMatch = item.id.match(/Caja \(x(\d+)\)/);
+          const presUnitsVal = isMedio ? 0.5 : boxMatch ? Number(boxMatch[1]) : 1;
+          return {
+            venta_id: venta.id,
+            producto_id: item.id.split("_")[0],
+            descripcion: `${item.nombre} (${item.presentacion || "Unidad"})`,
+            cantidad: item.cantidad,
+            precio_unitario: item.precio,
+            subtotal: item.precio * item.cantidad,
+            unidad_medida: item.presentacion || "Unidad",
+            presentacion: item.presentacion || "Unidad",
+            unidades_por_presentacion: presUnitsVal,
+          };
+        });
         await supabase.from("venta_items").insert(ventaItemRows);
 
         // Update stock + log movements
         for (const item of items) {
           const prodId = item.id.split("_")[0];
           const match = item.id.match(/Caja \(x(\d+)\)/);
-          const presUnits = match ? Number(match[1]) : 1;
+          const isMedioCarton = item.id.includes("Medio Cartón") || (item.presentacion && item.presentacion.toLowerCase().includes("medio"));
+          const presUnits = isMedioCarton ? 0.5 : match ? Number(match[1]) : 1;
           const unitsToDeduct = item.cantidad * presUnits;
 
           const { data: prod } = await supabase
@@ -870,6 +970,27 @@ export default function CheckoutPage() {
 
         {/* ===== RIGHT COLUMN - Resumen del Pedido ===== */}
         <div>
+          {/* Saldo pendiente alert */}
+          {saldoPendiente > 0 && (
+            <div className="mb-4 bg-gradient-to-r from-orange-50 to-amber-50 border border-orange-200 rounded-2xl p-4">
+              <div className="flex items-center gap-2 mb-1">
+                <DollarSign className="w-4 h-4 text-orange-600" />
+                <span className="font-bold text-orange-800 text-sm">Tenés un saldo pendiente de {formatCurrency(saldoPendiente)}</span>
+              </div>
+              {deudasDetalle.length > 0 && (
+                <div className="mt-2 space-y-1">
+                  {deudasDetalle.map((d, i) => (
+                    <div key={i} className="flex justify-between text-xs text-orange-700">
+                      <span>{d.numero || "Comprobante"}</span>
+                      <span className="font-semibold">{formatCurrency(d.monto)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <p className="text-[11px] text-orange-600 mt-2">Recordá saldar tu deuda para mantener tu cuenta al día.</p>
+            </div>
+          )}
+
           <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6 sticky top-24">
             <h2 className="text-lg font-bold text-gray-900 mb-5">Resumen del Pedido</h2>
 
@@ -893,12 +1014,20 @@ export default function CheckoutPage() {
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium text-gray-900 truncate">{item.nombre}</p>
                     <p className="text-xs text-gray-400">
-                      {item.presentacion && `${item.presentacion} · `}x{item.cantidad}
+                      {item.presentacion && `${item.presentacion} · `}x{(item.id.includes("Medio Cartón") || (item.presentacion && item.presentacion.toLowerCase().includes("medio"))) ? item.cantidad * 0.5 : item.cantidad}
+                      {item.descuento ? <span className="ml-1.5 inline-flex items-center bg-red-100 text-red-600 text-[10px] font-bold px-1.5 py-0.5 rounded-full">-{item.descuento}%</span> : null}
                     </p>
                   </div>
-                  <p className="text-sm font-semibold text-gray-900 flex-shrink-0">
-                    {formatCurrency(item.precio * item.cantidad)}
-                  </p>
+                  <div className="text-right flex-shrink-0">
+                    {item.precio_original ? (
+                      <>
+                        <p className="text-[11px] text-gray-400 line-through">{formatCurrency(item.precio_original * item.cantidad)}</p>
+                        <p className="text-sm font-semibold text-gray-900">{formatCurrency(item.precio * item.cantidad)}</p>
+                      </>
+                    ) : (
+                      <p className="text-sm font-semibold text-gray-900">{formatCurrency(item.precio * item.cantidad)}</p>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>
@@ -1067,6 +1196,12 @@ export default function CheckoutPage() {
                 <span className="text-gray-500">Subtotal</span>
                 <span className="text-gray-900">{formatCurrency(subtotal)}</span>
               </div>
+              {totalSavings > 0 && (
+                <div className="flex justify-between text-sm">
+                  <span className="text-green-600">Ahorro por descuentos</span>
+                  <span className="text-green-600 font-medium">-{formatCurrency(totalSavings)}</span>
+                </div>
+              )}
               {config && metodoEntrega === "envio" && config.monto_minimo_envio > 0 && subtotal < config.monto_minimo_envio && (
                 <p className="text-xs text-pink-600">
                   Mínimo: {formatCurrency(config.monto_minimo_envio)} (faltan {formatCurrency(config.monto_minimo_envio - subtotal)})

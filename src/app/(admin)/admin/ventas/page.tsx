@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { supabase } from "@/lib/supabase";
 import type { Cliente, Producto, Usuario } from "@/types/database";
 import { Card, CardContent } from "@/components/ui/card";
@@ -132,6 +132,7 @@ export default function VentasPage() {
   const [clients, setClients] = useState<Cliente[]>([]);
   const [sellers, setSellers] = useState<Usuario[]>([]);
   const [comboItemsMap, setComboItemsMap] = useState<Record<string, ComboItemRef[]>>({});
+  const [activeDiscounts, setActiveDiscounts] = useState<any[]>([]);
 
   // --- sale state ---
   const [items, setItems] = useState<LineItem[]>([]);
@@ -145,6 +146,7 @@ export default function VentasPage() {
   const [recargo, setRecargo] = useState(0);
   const [despacho, setDespacho] = useState("Retira en local");
   const [saving, setSaving] = useState(false);
+  const [cobrarSaldo, setCobrarSaldo] = useState(false);
 
   // transferencia surcharge
   const [porcentajeTransferencia, setPorcentajeTransferencia] = useState(2);
@@ -201,6 +203,8 @@ export default function VentasPage() {
     fecha: string;
     saldoAnterior: number;
     saldoNuevo: number;
+    cashReceived?: number;
+    cashChange?: number;
     pdfUrl: string | null;
   }>({ open: false, numero: "", total: 0, subtotal: 0, descuento: 0, recargo: 0, transferSurcharge: 0, tipoComprobante: "", formaPago: "", moneda: "ARS", cliente: "", clienteDireccion: null, clienteTelefono: null, clienteCondicionIva: null, vendedor: "", items: [], fecha: "", saldoAnterior: 0, saldoNuevo: 0, pdfUrl: null });
   const [errorModal, setErrorModal] = useState<{ open: boolean; message: string }>({ open: false, message: "" });
@@ -213,7 +217,7 @@ export default function VentasPage() {
 
   // create client from POS
   const [createClientOpen, setCreateClientOpen] = useState(false);
-  const [newClientData, setNewClientData] = useState({ nombre: "", email: "", telefono: "", cuit: "", direccion: "" });
+  const [newClientData, setNewClientData] = useState({ nombre: "", email: "", telefono: "", cuit: "", direccion: "", tipo_documento: "", numero_documento: "", situacion_iva: "Consumidor final", razon_social: "", domicilio_fiscal: "", provincia: "", localidad: "", codigo_postal: "", barrio: "", observacion: "", vendedor_id: "" });
   const [creatingClient, setCreatingClient] = useState(false);
 
   // presentaciones
@@ -252,8 +256,8 @@ export default function VentasPage() {
   const fetchData = useCallback(async () => {
     const [{ data: prods }, { data: cls }, { data: sls }, { data: listas }] = await Promise.all([
       supabase.from("productos").select("*").eq("activo", true).order("nombre"),
-      supabase.from("clientes").select("*").eq("activo", true).order("nombre"),
-      supabase.from("usuarios").select("*").eq("activo", true),
+      supabase.from("clientes").select("id, nombre, email, telefono, domicilio, saldo, situacion_iva, tipo_documento, numero_documento, tipo_factura, razon_social, domicilio_fiscal, provincia, localidad, codigo_postal, vendedor_id").eq("activo", true).order("nombre"),
+      supabase.from("usuarios").select("id, nombre, email, rol, activo"),
       supabase.from("listas_precios").select("id, nombre, porcentaje_ajuste, es_default").eq("activa", true).order("nombre"),
     ]);
     setProducts(prods || []);
@@ -279,6 +283,14 @@ export default function VentasPage() {
       setComboItemsMap(cmap);
     }
 
+    // Pre-load active discounts
+    const { data: descuentosData } = await supabase
+      .from("descuentos")
+      .select("*")
+      .eq("activo", true)
+      .lte("fecha_inicio", new Date().toISOString().split("T")[0]);
+    setActiveDiscounts((descuentosData || []).filter((d: any) => !d.fecha_fin || d.fecha_fin >= new Date().toISOString().split("T")[0]));
+
     // Pre-load all presentaciones for search by code
     const { data: allPres } = await supabase.from("presentaciones").select("*");
     if (allPres) {
@@ -298,7 +310,7 @@ export default function VentasPage() {
         setReceiptConfig((prev) => ({ ...prev, ...JSON.parse(stored) }));
       }
     } catch {}
-    const { data: emp } = await supabase.from("empresa").select("*").limit(1).single();
+    const { data: emp } = await supabase.from("empresa").select("nombre, domicilio, telefono, cuit, situacion_iva, logo_url, web").limit(1).single();
     if (emp) {
       setReceiptConfig((prev) => ({
         ...prev,
@@ -323,26 +335,44 @@ export default function VentasPage() {
     } catch {}
   }, []);
 
-  // ---------- derived ----------
-  const selectedClient = clients.find((c) => c.id === clientId);
+  // Auto-print receipt when sale is finalized
+  useEffect(() => {
+    if (successModal.open && receiptRef.current) {
+      const timer = setTimeout(() => {
+        handlePrintReceipt();
+      }, 600);
+      return () => clearTimeout(timer);
+    }
+  }, [successModal.open]);
 
-  const filteredProducts = products.filter(
-    (p) =>
-      p.nombre.toLowerCase().includes(productSearch.toLowerCase()) ||
-      p.codigo.toLowerCase().includes(productSearch.toLowerCase()) ||
-      (presentacionesMap[p.id] || []).some((pr) =>
-        (pr.codigo || "").toLowerCase().includes(productSearch.toLowerCase())
-      )
-  );
+  // ---------- derived (memoized) ----------
+  const selectedClient = useMemo(() => clients.find((c) => c.id === clientId), [clients, clientId]);
 
-  const filteredClients = clients.filter(
-    (c) =>
-      c.nombre.toLowerCase().includes(clientSearch.toLowerCase()) ||
-      (c.email || "").toLowerCase().includes(clientSearch.toLowerCase()) ||
-      (c.telefono || "").includes(clientSearch)
-  );
+  const filteredProducts = useMemo(() => {
+    const term = productSearch.toLowerCase();
+    if (!term) return products;
+    return products.filter(
+      (p) =>
+        p.nombre.toLowerCase().includes(term) ||
+        p.codigo.toLowerCase().includes(term) ||
+        (presentacionesMap[p.id] || []).some((pr) =>
+          (pr.codigo || "").toLowerCase().includes(term)
+        )
+    );
+  }, [products, productSearch, presentacionesMap]);
 
-  const subtotal = items.reduce((acc, i) => acc + i.subtotal, 0);
+  const filteredClients = useMemo(() => {
+    const term = clientSearch.toLowerCase();
+    if (!term) return clients;
+    return clients.filter(
+      (c) =>
+        c.nombre.toLowerCase().includes(term) ||
+        (c.email || "").toLowerCase().includes(term) ||
+        (c.telefono || "").includes(clientSearch)
+    );
+  }, [clients, clientSearch]);
+
+  const subtotal = useMemo(() => items.reduce((acc, i) => acc + i.subtotal, 0), [items]);
   const descuentoAmount = subtotal * (descuento / 100);
   const recargoAmount = subtotal * (recargo / 100);
   const baseTotal = subtotal - descuentoAmount + recargoAmount;
@@ -362,7 +392,9 @@ export default function VentasPage() {
   const mixtoValid = formaPago !== "Mixto" || Math.abs(mixtoRemaining) < 0.01;
 
   const cashReceivedNum = parseFloat(cashReceived) || 0;
-  const cashChange = cashReceivedNum - total;
+  const saldoPendienteCliente = cobrarSaldo && selectedClient && selectedClient.saldo > 0 ? selectedClient.saldo : 0;
+  const totalACobrar = total + saldoPendienteCliente;
+  const cashChange = cashReceivedNum - totalACobrar;
 
   // ---------- presentaciones ----------
   const fetchPresentaciones = async (productoId: string) => {
@@ -371,6 +403,36 @@ export default function VentasPage() {
     const pres = (data || []).map((raw: any) => ({ ...raw, codigo: raw.sku || "" })) as Presentacion[];
     setPresentacionesMap((prev) => ({ ...prev, [productoId]: pres }));
     return pres;
+  };
+
+  // ---------- discount helper ----------
+  const getProductDiscount = (product: Producto, presName: string): number => {
+    let bestDiscount = 0;
+    for (const d of activeDiscounts) {
+      // Check presentation filter
+      if (d.presentacion === "unidad" && presName !== "Unidad") continue;
+      if (d.presentacion === "caja" && presName === "Unidad") continue;
+      // Check scope
+      if (d.aplica_a === "todos") {
+        bestDiscount = Math.max(bestDiscount, Number(d.porcentaje));
+      } else if (d.aplica_a === "categorias") {
+        const catIds: string[] = d.categorias_ids || [];
+        if (catIds.includes((product as any).categoria_id) || catIds.includes((product as any).subcategoria_id)) {
+          bestDiscount = Math.max(bestDiscount, Number(d.porcentaje));
+        }
+      } else if (d.aplica_a === "subcategorias") {
+        const subIds: string[] = d.subcategorias_ids || [];
+        if ((product as any).subcategoria_id && subIds.includes((product as any).subcategoria_id)) {
+          bestDiscount = Math.max(bestDiscount, Number(d.porcentaje));
+        }
+      } else if (d.aplica_a === "productos") {
+        const prodIds: string[] = d.productos_ids || [];
+        if (prodIds.includes(product.id)) {
+          bestDiscount = Math.max(bestDiscount, Number(d.porcentaje));
+        }
+      }
+    }
+    return bestDiscount;
   };
 
   // ---------- cart operations ----------
@@ -408,18 +470,25 @@ export default function VentasPage() {
       updateQty(items[existingIdx].id, items[existingIdx].qty + 1, presName === "Unidad");
       setSelectedItemIdx(existingIdx);
     } else {
+      const autoDiscount = getProductDiscount(product, presName);
+      const discountedSubtotal = presPrice * (1 - autoDiscount / 100);
       const newItems = [
         ...items,
         {
           id: crypto.randomUUID(),
           producto_id: product.id,
           code: presentacion?.codigo || product.codigo,
-          description: presName === "Unidad" ? product.nombre.replace(/\s*[-–]\s*Unidad$/i, "") : `${product.nombre.replace(/\s*[-–]\s*Unidad$/i, "")} (${presName})`,
+          description: (() => {
+            const baseName = product.nombre.replace(/\s*[-–]\s*Unidad$/i, "").replace(/\s*\(Caja\s*x[\d.]+\)\s*/gi, "").replace(/\s*\(Medio\s*Cart[oó]n\)\s*/gi, "").trim();
+            if (presName === "Unidad") return baseName;
+            if (baseName.toLowerCase().includes(presName.toLowerCase().replace(/[()]/g, ""))) return baseName;
+            return baseName;
+          })(),
           qty: 1,
           unit: product.unidad_medida,
           price: presPrice,
-          discount: 0,
-          subtotal: presPrice,
+          discount: autoDiscount,
+          subtotal: discountedSubtotal,
           presentacion: presName,
           unidades_por_presentacion: presUnits,
           stock: comboStock,
@@ -819,6 +888,7 @@ export default function VentasPage() {
     setClientAddresses([]);
     setSelectedItemIdx(-1);
     setCuentaBancariaId("");
+    setCobrarSaldo(false);
   };
 
   // ---------- finalize flow ----------
@@ -986,6 +1056,17 @@ export default function VentasPage() {
           telefono: newClientData.telefono.trim() || null,
           cuit: newClientData.cuit.trim() || null,
           direccion: newClientData.direccion.trim() || null,
+          tipo_documento: newClientData.tipo_documento || null,
+          numero_documento: newClientData.numero_documento || null,
+          situacion_iva: newClientData.situacion_iva,
+          razon_social: newClientData.razon_social || null,
+          domicilio_fiscal: newClientData.domicilio_fiscal || null,
+          provincia: newClientData.provincia || null,
+          localidad: newClientData.localidad || null,
+          codigo_postal: newClientData.codigo_postal || null,
+          barrio: (newClientData as any).barrio || null,
+          observacion: newClientData.observacion || null,
+          vendedor_id: newClientData.vendedor_id || null,
           activo: true,
           saldo: 0,
         })
@@ -996,7 +1077,7 @@ export default function VentasPage() {
         setClientId(data.id);
         setCreateClientOpen(false);
         setClientDialogOpen(false);
-        setNewClientData({ nombre: "", email: "", telefono: "", cuit: "", direccion: "" });
+        setNewClientData({ nombre: "", email: "", telefono: "", cuit: "", direccion: "", tipo_documento: "", numero_documento: "", situacion_iva: "Consumidor final", razon_social: "", domicilio_fiscal: "", provincia: "", localidad: "", codigo_postal: "", barrio: "", observacion: "", vendedor_id: "" });
       }
     } finally {
       setCreatingClient(false);
@@ -1006,6 +1087,10 @@ export default function VentasPage() {
   // ---------- sale finalization (all business logic preserved) ----------
   const handleCerrarComprobante = async () => {
     if (items.length === 0) return;
+    if (formaPago === "Cuenta Corriente" && !clientId) {
+      setErrorModal({ open: true, message: "Debes seleccionar un cliente para usar Cuenta Corriente." });
+      return;
+    }
     if (!mixtoValid) {
       setErrorModal({ open: true, message: "Los montos del pago mixto no suman el total." });
       return;
@@ -1014,10 +1099,11 @@ export default function VentasPage() {
     setCashDialogOpen(false);
 
     try {
-      const { data: numData } = await supabase.rpc("next_numero", { p_tipo: "venta" });
+      const { data: numData, error: numError } = await supabase.rpc("next_numero", { p_tipo: "venta" });
+      if (numError) { setErrorModal({ open: true, message: `Error al generar número: ${numError.message}` }); setSaving(false); return; }
       const numero = numData || "00001-00000000";
 
-      const { data: venta } = await supabase
+      const { data: venta, error: ventaError } = await supabase
         .from("ventas")
         .insert({
           numero,
@@ -1032,11 +1118,13 @@ export default function VentasPage() {
           total,
           estado: "cerrada",
           observacion: despacho,
+          metodo_entrega: deliveryMethod === "delivery" ? "envio" : "retiro",
           lista_precio_id: listaPrecioId || null,
         })
         .select()
         .single();
 
+      if (ventaError) { setErrorModal({ open: true, message: `Error al crear venta: ${ventaError.message}` }); setSaving(false); return; }
       if (venta) {
         const ventaItems = items.map((i) => ({
           venta_id: venta.id,
@@ -1189,8 +1277,41 @@ export default function VentasPage() {
           });
         }
 
+        // Collect pending balance if toggled
+        if (cobrarSaldo && clientId && selectedClient && selectedClient.saldo > 0) {
+          const saldoPendiente = selectedClient.saldo;
+          // Create caja_movimiento for saldo collection
+          await supabase.from("caja_movimientos").insert({
+            fecha: hoy,
+            hora,
+            tipo: "ingreso",
+            descripcion: `Cobro saldo pendiente - ${selectedClient.nombre} (Venta #${numero})`,
+            metodo_pago: formaPago === "Mixto" ? "Efectivo" : formaPago,
+            monto: saldoPendiente,
+            referencia_id: venta.id,
+            referencia_tipo: "venta",
+          });
+          // Update cuenta_corriente
+          await supabase.from("cuenta_corriente").insert({
+            cliente_id: clientId,
+            fecha: hoy,
+            comprobante: `Cobro saldo - Venta #${numero}`,
+            descripcion: `Cobro saldo pendiente (${formaPago === "Mixto" ? "Efectivo" : formaPago}) — desde Punto de Venta`,
+            debe: 0,
+            haber: saldoPendiente,
+            saldo: 0,
+            forma_pago: formaPago === "Mixto" ? "Efectivo" : formaPago,
+            venta_id: venta.id,
+          });
+          // Update client saldo (subtract the pending amount)
+          const currentSaldo = selectedClient.saldo;
+          await supabase.from("clientes").update({ saldo: currentSaldo - saldoPendiente }).eq("id", clientId);
+          // Update local state so saldoNuevo calculation is correct
+          selectedClient.saldo = currentSaldo - saldoPendiente;
+        }
+
         // Capture sale data before reset
-        const saldoAnterior = selectedClient?.saldo || 0;
+        const saldoAnterior = cobrarSaldo && selectedClient ? 0 : (selectedClient?.saldo || 0);
         const saldoNuevo = formaPago === "Cuenta Corriente"
           ? saldoAnterior + total
           : formaPago === "Mixto" && mixtoCuentaCorriente > 0
@@ -1215,12 +1336,16 @@ export default function VentasPage() {
           fecha: new Date().toLocaleDateString("es-AR", { day: "2-digit", month: "2-digit", year: "numeric", timeZone: "America/Argentina/Buenos_Aires" }),
           saldoAnterior,
           saldoNuevo,
+          cashReceived: formaPago === "Efectivo" ? cashReceivedNum : undefined,
+          cashChange: formaPago === "Efectivo" ? (cashReceivedNum - totalACobrar) : undefined,
         };
 
         resetSale();
         fetchData();
         setSuccessModal({ open: true, ...saleData, pdfUrl: null });
       }
+    } catch (err: any) {
+      setErrorModal({ open: true, message: `Error inesperado: ${err?.message || String(err)}` });
     } finally {
       setSaving(false);
     }
@@ -1385,7 +1510,19 @@ export default function VentasPage() {
                         onClick={() => setSelectedItemIdx(idx)}
                       >
                         <div className="flex-1 min-w-0">
-                          <p className="text-xs lg:text-sm font-medium truncate">{item.description}</p>
+                          <div className="flex items-center gap-1">
+                            <p className="text-xs lg:text-sm font-medium truncate">{item.description}</p>
+                            {item.discount > 0 && (
+                              <span className="shrink-0 inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-semibold bg-orange-100 text-orange-700">
+                                -{item.discount}%
+                              </span>
+                            )}
+                            {!item.es_combo && item.unidades_por_presentacion > 1 && (
+                              <span className="shrink-0 inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-medium bg-indigo-100 text-indigo-700">
+                                Caja
+                              </span>
+                            )}
+                          </div>
                           <p className="text-[10px] lg:text-xs text-muted-foreground font-mono">
                             {(() => {
                               if (item.presentacion === "Unidad" && item.qty > 1) {
@@ -1401,15 +1538,7 @@ export default function VentasPage() {
                               {item.presentacion} ({item.unidades_por_presentacion} un.)
                             </Badge>
                           )}
-                          {item.presentacion === "Unidad" && (() => {
-                            const pres = presentacionesMap[item.producto_id] || [];
-                            const match = pres.find((p) => Number(p.cantidad) === item.qty && p.nombre !== "Unidad");
-                            return match ? (
-                              <Badge variant="outline" className="mt-1 text-[10px] border-amber-300 text-amber-600 bg-amber-50">
-                                = 1 {match.nombre}
-                              </Badge>
-                            ) : null;
-                          })()}
+                          {/* Removed "= 1 Caja" equivalence badge - was confusing */}
                         </div>
                         <div className="flex items-center gap-0.5 lg:gap-1">
                           <Button
@@ -1442,6 +1571,15 @@ export default function VentasPage() {
                         <div className="text-right w-16 lg:w-24 shrink-0">
                           <p className="text-xs lg:text-sm font-semibold">{formatCurrency(item.subtotal)}</p>
                           <p className="text-[10px] lg:text-xs text-muted-foreground">{formatCurrency(item.price)} c/u</p>
+                          {item.es_combo && item.comboItems && item.comboItems.length > 0 && (() => {
+                            const totalUnits = item.comboItems.reduce((sum, ci) => sum + ci.cantidad, 0);
+                            return totalUnits > 0 ? (
+                              <p className="text-[9px] lg:text-[10px] text-emerald-600">{formatCurrency(item.price / totalUnits)} x unidad</p>
+                            ) : null;
+                          })()}
+                          {!item.es_combo && item.unidades_por_presentacion > 1 && (
+                            <p className="text-[9px] lg:text-[10px] text-emerald-600">{formatCurrency(item.price / item.unidades_por_presentacion)} x unidad</p>
+                          )}
                         </div>
                         <Button
                           variant="ghost"
@@ -1501,6 +1639,25 @@ export default function VentasPage() {
             </Select>
           )}
 
+          {/* Vendedor selector */}
+          {sellers.length > 0 && (
+            <div className="space-y-1">
+              <p className="text-[10px] font-semibold tracking-wider text-muted-foreground uppercase">Vendedor</p>
+              <Select value={vendedorId} onValueChange={(v) => setVendedorId(v ?? "")}>
+                <SelectTrigger className="h-8 text-xs">
+                  <SelectValue placeholder="Seleccionar vendedor">
+                    {sellers.find((s) => s.id === vendedorId)?.nombre || "Seleccionar vendedor"}
+                  </SelectValue>
+                </SelectTrigger>
+              <SelectContent>
+                {sellers.map((s) => (
+                  <SelectItem key={s.id} value={s.id}>{s.nombre}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            </div>
+          )}
+
           {/* Payment method grid */}
           <div className="grid grid-cols-4 gap-1.5">
             {[
@@ -1539,18 +1696,26 @@ export default function VentasPage() {
                 </button>
               </div>
               {cuentasBancarias.length > 0 && (
-                <Select value={cuentaBancariaId} onValueChange={(v) => setCuentaBancariaId(v ?? "")}>
-                  <SelectTrigger className="h-8 text-xs">
-                    <SelectValue placeholder="Seleccionar cuenta destino" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {cuentasBancarias.map((cb) => (
-                      <SelectItem key={cb.id} value={cb.id}>
-                        {cb.nombre} {cb.alias ? `(${cb.alias})` : ""}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <div className="space-y-1">
+                  <p className="text-[10px] font-semibold tracking-wider text-muted-foreground uppercase">Cuenta destino</p>
+                  <Select value={cuentaBancariaId} onValueChange={(v) => setCuentaBancariaId(v ?? "")}>
+                    <SelectTrigger className="h-8 text-xs">
+                      <SelectValue placeholder="Seleccionar cuenta">
+                        {(() => {
+                          const sel = cuentasBancarias.find((cb) => cb.id === cuentaBancariaId);
+                          return sel ? `${sel.nombre}${sel.alias ? ` (${sel.alias})` : ""}` : "Seleccionar cuenta";
+                        })()}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent>
+                      {cuentasBancarias.map((cb) => (
+                        <SelectItem key={cb.id} value={cb.id}>
+                          {cb.nombre}{cb.alias ? ` (${cb.alias})` : ""}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
               )}
             </div>
           )}
@@ -1661,31 +1826,25 @@ export default function VentasPage() {
 
                 {/* Bank account selector for transferencia */}
                 {mixtoToggleTransferencia && cuentasBancarias.length > 0 && (
-                  <div className="space-y-1.5">
+                  <div className="space-y-1">
                     <p className="text-[10px] font-semibold tracking-wider text-muted-foreground uppercase">Cuenta destino</p>
-                    {(() => {
-                      const selected = cuentasBancarias.find((cb) => cb.id === cuentaBancariaId);
-                      return (
-                        <div className="flex items-center justify-between rounded-lg border px-3 py-2">
-                          <div className="text-xs">
-                            <span className="font-medium">{selected ? selected.nombre : "Sin seleccionar"}</span>
-                            {selected?.alias && <span className="text-muted-foreground ml-1">({selected.alias})</span>}
-                          </div>
-                          <Select value={cuentaBancariaId} onValueChange={(v) => setCuentaBancariaId(v ?? "")}>
-                            <SelectTrigger className="h-7 w-auto text-xs border-0 bg-transparent px-2">
-                              <span className="text-emerald-600 font-medium">Cambiar</span>
-                            </SelectTrigger>
-                            <SelectContent>
-                              {cuentasBancarias.map((cb) => (
-                                <SelectItem key={cb.id} value={cb.id}>
-                                  {cb.nombre} {cb.alias ? `(${cb.alias})` : ""}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-                      );
-                    })()}
+                    <Select value={cuentaBancariaId} onValueChange={(v) => setCuentaBancariaId(v ?? "")}>
+                      <SelectTrigger className="h-8 text-xs">
+                        <SelectValue placeholder="Seleccionar cuenta">
+                          {(() => {
+                            const sel = cuentasBancarias.find((cb) => cb.id === cuentaBancariaId);
+                            return sel ? `${sel.nombre}${sel.alias ? ` (${sel.alias})` : ""}` : "Seleccionar cuenta";
+                          })()}
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent>
+                        {cuentasBancarias.map((cb) => (
+                          <SelectItem key={cb.id} value={cb.id}>
+                            {cb.nombre}{cb.alias ? ` (${cb.alias})` : ""}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </div>
                 )}
 
@@ -1854,6 +2013,40 @@ export default function VentasPage() {
               <p className="text-xs text-muted-foreground text-right">
                 {items.length} producto{items.length !== 1 ? "s" : ""}
               </p>
+              {/* Saldo pendiente option */}
+              {selectedClient && selectedClient.saldo > 0 && (
+                <>
+                  <Separator />
+                  <label className="flex items-center gap-2 cursor-pointer py-1">
+                    <input
+                      type="checkbox"
+                      checked={cobrarSaldo}
+                      onChange={(e) => setCobrarSaldo(e.target.checked)}
+                      className="w-4 h-4 rounded border-orange-300 text-orange-600 accent-orange-600"
+                    />
+                    <span className="text-xs font-medium text-orange-700">
+                      Cobrar saldo pendiente ({formatCurrency(selectedClient.saldo)})
+                    </span>
+                  </label>
+                  {cobrarSaldo && (
+                    <div className="space-y-0.5 rounded-lg bg-orange-50 border border-orange-200 px-3 py-2 text-xs">
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Total pedido</span>
+                        <span>{formatCurrency(total)}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Saldo pendiente</span>
+                        <span className="text-orange-600">+{formatCurrency(selectedClient.saldo)}</span>
+                      </div>
+                      <Separator />
+                      <div className="flex justify-between font-bold">
+                        <span>Total a cobrar</span>
+                        <span className="text-emerald-600">{formatCurrency(total + selectedClient.saldo)}</span>
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
             </CardContent>
           </Card>
 
@@ -1919,7 +2112,7 @@ export default function VentasPage() {
               value={productSearch}
               onChange={(e) => { setProductSearch(e.target.value); setSearchHighlight(0); }}
               onKeyDown={(e) => {
-                const list = filteredProducts.slice(0, 20);
+                const list = filteredProducts.slice(0, 50);
                 if (e.key === "ArrowDown") { e.preventDefault(); setSearchHighlight((h) => Math.min(h + 1, list.length - 1)); }
                 else if (e.key === "ArrowUp") { e.preventDefault(); setSearchHighlight((h) => Math.max(h - 1, 0)); }
                 else if (e.key === "Enter" && list.length > 0) {
@@ -1940,7 +2133,7 @@ export default function VentasPage() {
             />
           </div>
           <div className="space-y-1 max-h-[400px] overflow-y-auto">
-            {filteredProducts.slice(0, 20).map((p, idx) => {
+            {filteredProducts.slice(0, 50).map((p, idx) => {
               const pres = presentacionesMap[p.id] || [];
               // Check if search matches a specific presentation code
               const matchedPres = productSearch.length >= 2
@@ -1954,20 +2147,25 @@ export default function VentasPage() {
                   <button
                     onClick={() => {
                       if (pres.length === 0) fetchPresentaciones(p.id);
-                      if (matchedPres) {
-                        tryAddItem(p, matchedPres);
-                      } else {
-                        tryAddItem(p);
-                      }
+                      tryAddItem(p);
                     }}
                     onMouseEnter={() => { fetchPresentaciones(p.id); setSearchHighlight(idx); }}
                     className={`w-full flex items-center justify-between p-3 transition-colors text-left ${highlighted ? "bg-muted" : "hover:bg-muted"}`}
                   >
                     <div>
-                      <p className="text-sm font-medium">{p.nombre}</p>
+                      <div className="flex items-center gap-1.5">
+                        <p className="text-sm font-medium">{p.nombre}</p>
+                        {(() => {
+                          const unitDisc = getProductDiscount(p, "Unidad");
+                          return unitDisc > 0 ? (
+                            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-semibold bg-orange-100 text-orange-700">
+                              -{unitDisc}%
+                            </span>
+                          ) : null;
+                        })()}
+                      </div>
                       <p className="text-xs text-muted-foreground font-mono">
                         {p.codigo}
-                        {matchedPres && <span className="ml-2 text-primary font-semibold">→ {matchedPres.nombre}: {matchedPres.codigo}</span>}
                       </p>
                     </div>
                     <div className="text-right">
@@ -1990,16 +2188,8 @@ export default function VentasPage() {
                       })()}
                     </div>
                   </button>
-                  {pres.length > 0 && (
+                  {pres.filter((pr) => pr.nombre !== "Unidad" && pr.cantidad !== 1).length > 0 && (
                     <div className="border-t bg-muted/30 px-3 py-1.5 flex gap-2 flex-wrap">
-                      <button
-                        onClick={() => tryAddItem(p)}
-                        className={`text-xs px-3 py-1.5 rounded-md font-medium transition-colors ${
-                          !matchedPres ? "bg-primary/10 text-primary hover:bg-primary/20" : "bg-muted text-muted-foreground hover:bg-muted/80"
-                        }`}
-                      >
-                        Unidad - {formatCurrency(p.precio)}
-                      </button>
                       {pres.filter((pr) => pr.nombre !== "Unidad" && pr.cantidad !== 1).map((pr) => (
                         <button
                           key={pr.id}
@@ -2010,8 +2200,7 @@ export default function VentasPage() {
                               : "bg-primary/10 text-primary hover:bg-primary/20"
                           }`}
                         >
-                          {pr.nombre} ({pr.cantidad} un.) - {formatCurrency(pr.precio)}
-                          {pr.codigo && <span className="ml-1 opacity-70">· {pr.codigo}</span>}
+                          Caja x{pr.cantidad} - {formatCurrency(pr.precio)}
                         </button>
                       ))}
                     </div>
@@ -2113,7 +2302,7 @@ export default function VentasPage() {
               size="sm"
               variant="outline"
               onClick={() => {
-                setNewClientData({ nombre: "", email: "", telefono: "", cuit: "", direccion: "" });
+                setNewClientData({ nombre: "", email: "", telefono: "", cuit: "", direccion: "", tipo_documento: "", numero_documento: "", situacion_iva: "Consumidor final", razon_social: "", domicilio_fiscal: "", provincia: "", localidad: "", codigo_postal: "", barrio: "", observacion: "", vendedor_id: "" });
                 setCreateClientOpen(true);
               }}
             >
@@ -2126,58 +2315,128 @@ export default function VentasPage() {
 
       {/* Create client dialog */}
       <Dialog open={createClientOpen} onOpenChange={setCreateClientOpen}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <UserPlus className="w-5 h-5" />
               Nuevo Cliente
             </DialogTitle>
           </DialogHeader>
-          <div className="space-y-3">
-            <div>
-              <label className="text-xs font-medium text-muted-foreground">Nombre *</label>
-              <Input
-                value={newClientData.nombre}
-                onChange={(e) => setNewClientData((d) => ({ ...d, nombre: e.target.value }))}
-                placeholder="Nombre completo o razón social"
-                autoFocus
-              />
+          <div className="space-y-4">
+            {/* Row 1: Nombre, Razón Social */}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">Nombre *</label>
+                <Input value={newClientData.nombre} onChange={(e) => setNewClientData((d) => ({ ...d, nombre: e.target.value }))} placeholder="Nombre completo" autoFocus />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">Razón Social</label>
+                <Input value={newClientData.razon_social} onChange={(e) => setNewClientData((d) => ({ ...d, razon_social: e.target.value }))} placeholder="Razón social" />
+              </div>
             </div>
+            {/* Row 2: Tipo Doc, Nro Doc, CUIT */}
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">Tipo Documento</label>
+                <Select value={newClientData.tipo_documento} onValueChange={(v) => setNewClientData((d) => ({ ...d, tipo_documento: v ?? "" }))}>
+                  <SelectTrigger><SelectValue placeholder="Seleccionar" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="DNI">DNI</SelectItem>
+                    <SelectItem value="CUIT">CUIT</SelectItem>
+                    <SelectItem value="CUIL">CUIL</SelectItem>
+                    <SelectItem value="Pasaporte">Pasaporte</SelectItem>
+                    <SelectItem value="Otro">Otro</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">Nro. Documento</label>
+                <Input value={newClientData.numero_documento} onChange={(e) => setNewClientData((d) => ({ ...d, numero_documento: e.target.value }))} placeholder="12345678" />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">CUIT</label>
+                <Input value={newClientData.cuit} onChange={(e) => setNewClientData((d) => ({ ...d, cuit: e.target.value }))} placeholder="20-12345678-9" />
+              </div>
+            </div>
+            {/* Row 3: Situación IVA */}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">Situación IVA</label>
+                <Select value={newClientData.situacion_iva} onValueChange={(v) => setNewClientData((d) => ({ ...d, situacion_iva: v ?? "Consumidor final" }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="Consumidor final">Consumidor final</SelectItem>
+                    <SelectItem value="Responsable inscripto">Responsable inscripto</SelectItem>
+                    <SelectItem value="Monotributista">Monotributista</SelectItem>
+                    <SelectItem value="Exento">Exento</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            {/* Row 4: Email, Teléfono */}
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="text-xs font-medium text-muted-foreground">Email</label>
-                <Input
-                  value={newClientData.email}
-                  onChange={(e) => setNewClientData((d) => ({ ...d, email: e.target.value }))}
-                  placeholder="email@ejemplo.com"
-                  type="email"
-                />
+                <Input value={newClientData.email} onChange={(e) => setNewClientData((d) => ({ ...d, email: e.target.value }))} placeholder="email@ejemplo.com" type="email" />
               </div>
               <div>
                 <label className="text-xs font-medium text-muted-foreground">Teléfono</label>
-                <Input
-                  value={newClientData.telefono}
-                  onChange={(e) => setNewClientData((d) => ({ ...d, telefono: e.target.value }))}
-                  placeholder="11-1234-5678"
-                />
+                <Input value={newClientData.telefono} onChange={(e) => setNewClientData((d) => ({ ...d, telefono: e.target.value }))} placeholder="11-1234-5678" />
               </div>
             </div>
+            {/* Row 5: Domicilio, Domicilio Fiscal */}
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="text-xs font-medium text-muted-foreground">CUIT</label>
-                <Input
-                  value={newClientData.cuit}
-                  onChange={(e) => setNewClientData((d) => ({ ...d, cuit: e.target.value }))}
-                  placeholder="20-12345678-9"
-                />
+                <label className="text-xs font-medium text-muted-foreground">Domicilio</label>
+                <Input value={newClientData.direccion} onChange={(e) => setNewClientData((d) => ({ ...d, direccion: e.target.value }))} placeholder="Calle 123" />
               </div>
               <div>
-                <label className="text-xs font-medium text-muted-foreground">Dirección</label>
-                <Input
-                  value={newClientData.direccion}
-                  onChange={(e) => setNewClientData((d) => ({ ...d, direccion: e.target.value }))}
-                  placeholder="Calle 123"
-                />
+                <label className="text-xs font-medium text-muted-foreground">Domicilio Fiscal</label>
+                <Input value={newClientData.domicilio_fiscal} onChange={(e) => setNewClientData((d) => ({ ...d, domicilio_fiscal: e.target.value }))} placeholder="Calle 456" />
+              </div>
+            </div>
+            {/* Row 6: Provincia, Localidad, CP, Barrio */}
+            <div className="grid grid-cols-4 gap-3">
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">Provincia</label>
+                <Select value={newClientData.provincia} onValueChange={(v) => setNewClientData((d) => ({ ...d, provincia: v ?? "" }))}>
+                  <SelectTrigger><SelectValue placeholder="Seleccionar" /></SelectTrigger>
+                  <SelectContent>
+                    {["Buenos Aires", "CABA", "Catamarca", "Chaco", "Chubut", "Córdoba", "Corrientes", "Entre Ríos", "Formosa", "Jujuy", "La Pampa", "La Rioja", "Mendoza", "Misiones", "Neuquén", "Río Negro", "Salta", "San Juan", "San Luis", "Santa Cruz", "Santa Fe", "Santiago del Estero", "Tierra del Fuego", "Tucumán"].map((p) => (
+                      <SelectItem key={p} value={p}>{p}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">Localidad</label>
+                <Input value={newClientData.localidad} onChange={(e) => setNewClientData((d) => ({ ...d, localidad: e.target.value }))} placeholder="Localidad" />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">C.P.</label>
+                <Input value={newClientData.codigo_postal} onChange={(e) => setNewClientData((d) => ({ ...d, codigo_postal: e.target.value }))} placeholder="1234" />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">Barrio</label>
+                <Input value={newClientData.barrio} onChange={(e) => setNewClientData((d) => ({ ...d, barrio: e.target.value }))} placeholder="Barrio" />
+              </div>
+            </div>
+            {/* Row 7: Vendedor, Observación */}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">Vendedor</label>
+                <Select value={newClientData.vendedor_id} onValueChange={(v) => setNewClientData((d) => ({ ...d, vendedor_id: v ?? "" }))}>
+                  <SelectTrigger><SelectValue placeholder="Seleccionar vendedor" /></SelectTrigger>
+                  <SelectContent>
+                    {sellers.map((s) => (
+                      <SelectItem key={s.id} value={s.id}>{s.nombre}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">Observación</label>
+                <Input value={newClientData.observacion} onChange={(e) => setNewClientData((d) => ({ ...d, observacion: e.target.value }))} placeholder="Notas adicionales" />
               </div>
             </div>
           </div>
@@ -2286,8 +2545,11 @@ export default function VentasPage() {
             {/* Totales en fila */}
             <div className="grid grid-cols-3 gap-2 text-center">
               <div>
-                <p className="text-[10px] sm:text-xs text-muted-foreground">Total</p>
-                <p className="text-sm sm:text-lg font-bold">{formatCurrency(total)}</p>
+                <p className="text-[10px] sm:text-xs text-muted-foreground">{saldoPendienteCliente > 0 ? "Total a cobrar" : "Total"}</p>
+                <p className="text-sm sm:text-lg font-bold">{formatCurrency(totalACobrar)}</p>
+                {saldoPendienteCliente > 0 && (
+                  <p className="text-[9px] text-orange-600">inc. saldo {formatCurrency(saldoPendienteCliente)}</p>
+                )}
               </div>
               <div>
                 <p className="text-[10px] sm:text-xs text-muted-foreground">Recibido</p>
@@ -2297,10 +2559,10 @@ export default function VentasPage() {
               </div>
               <div>
                 <p className="text-[10px] sm:text-xs text-muted-foreground">
-                  {cashReceivedNum >= total ? "Vuelto" : "Falta"}
+                  {cashReceivedNum >= totalACobrar ? "Vuelto" : "Falta"}
                 </p>
-                <p className={`text-sm sm:text-lg font-bold ${cashReceivedNum >= total ? "text-emerald-600" : "text-destructive"}`}>
-                  {cashReceivedNum === 0 ? "—" : cashReceivedNum >= total ? formatCurrency(cashChange) : formatCurrency(total - cashReceivedNum)}
+                <p className={`text-sm sm:text-lg font-bold ${cashReceivedNum >= totalACobrar ? "text-emerald-600" : "text-destructive"}`}>
+                  {cashReceivedNum === 0 ? "—" : cashReceivedNum >= totalACobrar ? formatCurrency(cashChange) : formatCurrency(totalACobrar - cashReceivedNum)}
                 </p>
               </div>
             </div>
@@ -2346,7 +2608,7 @@ export default function VentasPage() {
                 variant="outline"
                 size="sm"
                 className="w-full text-xs sm:text-sm"
-                onClick={() => setCashReceived(String(total))}
+                onClick={() => setCashReceived(String(totalACobrar))}
               >
                 Monto Exacto
               </Button>
@@ -2370,7 +2632,7 @@ export default function VentasPage() {
                 size="sm"
                 className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs sm:text-sm"
                 onClick={handleCerrarComprobante}
-                disabled={cashReceivedNum < total || saving}
+                disabled={cashReceivedNum < totalACobrar || saving}
               >
                 {saving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
                 Cobrar
@@ -2475,18 +2737,31 @@ export default function VentasPage() {
             )}
 
             {/* Add new address */}
-            <button
-              onClick={() => {
-                setShowNewAddressForm(true);
-                setNewAddress({ direccion: "", ciudad: "", provincia: "", codigo_postal: "", telefono: "" });
-              }}
-              className="w-full flex items-center gap-3 p-4 rounded-xl border-2 border-dashed border-border hover:bg-accent transition-all text-left"
-            >
-              <div className="w-10 h-10 rounded-full bg-muted flex items-center justify-center">
-                <Plus className="w-5 h-5 text-muted-foreground" />
-              </div>
-              <span className="text-sm font-medium text-muted-foreground">Agregar Nueva Dirección</span>
-            </button>
+            {clientAddresses.length > 0 ? (
+              <button
+                onClick={() => {
+                  setShowNewAddressForm(true);
+                  setNewAddress({ direccion: "", ciudad: "", provincia: "", codigo_postal: "", telefono: "" });
+                }}
+                className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors ml-1"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Agregar otra dirección</span>
+              </button>
+            ) : (
+              <button
+                onClick={() => {
+                  setShowNewAddressForm(true);
+                  setNewAddress({ direccion: "", ciudad: "", provincia: "", codigo_postal: "", telefono: "" });
+                }}
+                className="w-full flex items-center gap-3 p-4 rounded-xl border-2 border-dashed border-border hover:bg-accent transition-all text-left"
+              >
+                <div className="w-10 h-10 rounded-full bg-muted flex items-center justify-center">
+                  <Plus className="w-5 h-5 text-muted-foreground" />
+                </div>
+                <span className="text-sm font-medium text-muted-foreground">Agregar Nueva Dirección</span>
+              </button>
+            )}
 
             {/* New address inline form */}
             {showNewAddressForm && (
@@ -2541,10 +2816,38 @@ export default function VentasPage() {
                     onClick={async () => {
                       setSavingAddress(true);
                       try {
+                        // Look up clientes_auth id for this client
+                        const { data: authData } = await supabase
+                          .from("clientes_auth")
+                          .select("id")
+                          .eq("cliente_id", clientId)
+                          .limit(1)
+                          .single();
+                        if (!authData) {
+                          // No clientes_auth linked - create address record directly on the client
+                          // Update client's domicilio field instead
+                          const { error: updateErr } = await supabase
+                            .from("clientes")
+                            .update({
+                              domicilio: newAddress.direccion,
+                              localidad: newAddress.ciudad,
+                              provincia: newAddress.provincia,
+                              codigo_postal: newAddress.codigo_postal,
+                            })
+                            .eq("id", clientId);
+                          if (updateErr) throw updateErr;
+                          await fetchClientAddresses(clientId);
+                          setSelectedAddressId("domicilio-principal");
+                          setDeliveryMethod("delivery");
+                          setDespacho("Envio a domicilio");
+                          setShowNewAddressForm(false);
+                          setSavingAddress(false);
+                          return;
+                        }
                         const { data, error } = await supabase
                           .from("cliente_direcciones")
                           .insert({
-                            cliente_auth_id: clientId,
+                            cliente_auth_id: authData.id,
                             nombre: newAddress.direccion,
                             direccion: newAddress.direccion,
                             ciudad: newAddress.ciudad,

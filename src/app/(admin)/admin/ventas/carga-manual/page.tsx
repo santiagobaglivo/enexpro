@@ -420,8 +420,8 @@ export default function CargaManualPage() {
         <div className="lg:col-span-3 space-y-4">
           {/* Header */}
           <Card>
-            <CardContent className="pt-6">
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <CardContent className="pt-6 overflow-visible">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 overflow-visible">
                 <div className="space-y-2">
                   <Label className="text-xs text-muted-foreground">
                     Tipo de comprobante
@@ -461,7 +461,7 @@ export default function CargaManualPage() {
                   />
                 </div>
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4 overflow-visible">
                 <div className="space-y-2">
                   <Label className="text-xs text-muted-foreground">Cliente</Label>
                   <Select value={clientId} onValueChange={(v) => setClientId(v || "")}>

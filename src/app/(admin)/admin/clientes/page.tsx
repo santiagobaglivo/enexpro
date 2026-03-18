@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState, useCallback, useRef } from "react";
+import React, { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { supabase } from "@/lib/supabase";
 import type { Cliente } from "@/types/database";
 import { Card, CardContent } from "@/components/ui/card";
@@ -100,6 +100,12 @@ export default function ClientesPage() {
   const [movHasta, setMovHasta] = useState("");
   const [movTotals, setMovTotals] = useState({ ventas: 0, nc: 0, cobros: 0, totalGastado: 0 });
   const [movExpanded, setMovExpanded] = useState<string | null>(null);
+  // Payment from movimientos
+  const [payMovOpen, setPayMovOpen] = useState(false);
+  const [payMovVenta, setPayMovVenta] = useState<any>(null);
+  const [payMovMonto, setPayMovMonto] = useState(0);
+  const [payMovMetodo, setPayMovMetodo] = useState<"Efectivo" | "Transferencia">("Efectivo");
+  const [payMovSaving, setPayMovSaving] = useState(false);
   const vendedorRef = useRef<HTMLDivElement>(null);
 
 
@@ -107,7 +113,7 @@ export default function ClientesPage() {
     setLoading(true);
     const { data } = await supabase
       .from("clientes")
-      .select("*")
+      .select("id, nombre, tipo_documento, numero_documento, cuit, situacion_iva, tipo_factura, razon_social, domicilio, domicilio_fiscal, telefono, email, provincia, localidad, codigo_postal, observacion, barrio, vendedor_id, saldo, origen, activo")
       .eq("activo", true)
       .order("nombre");
     setClients(data || []);
@@ -231,7 +237,7 @@ export default function ClientesPage() {
     // Fetch ventas (includes NC) with items
     const { data: ventas } = await supabase
       .from("ventas")
-      .select("id, numero, tipo_comprobante, fecha, created_at, forma_pago, total, venta_items(descripcion, cantidad, presentacion, precio_unitario, subtotal)")
+      .select("id, numero, tipo_comprobante, fecha, created_at, forma_pago, total, venta_items(descripcion, cantidad, presentacion, unidades_por_presentacion, precio_unitario, subtotal, producto_id)")
       .eq("cliente_id", clienteId)
       .gte("fecha", desde)
       .lte("fecha", hasta)
@@ -249,17 +255,46 @@ export default function ClientesPage() {
     // Fetch cuenta corriente
     const { data: cc } = await supabase
       .from("cuenta_corriente")
-      .select("id, fecha, comprobante, descripcion, debe, haber, saldo, forma_pago")
+      .select("id, fecha, comprobante, descripcion, debe, haber, saldo, forma_pago, venta_id")
       .eq("cliente_id", clienteId)
       .gte("fecha", desde)
       .lte("fecha", hasta)
       .order("fecha", { ascending: false });
+
+    // Compute pending balance per venta from cuenta_corriente
+    const ventaIds = (ventas || []).map((v: any) => v.id);
+    const saldoPorVenta: Record<string, number> = {};
+    if (ventaIds.length > 0) {
+      const { data: ccAll } = await supabase
+        .from("cuenta_corriente")
+        .select("venta_id, debe, haber")
+        .in("venta_id", ventaIds);
+      for (const row of ccAll || []) {
+        saldoPorVenta[row.venta_id] = (saldoPorVenta[row.venta_id] || 0) + (row.debe || 0) - (row.haber || 0);
+      }
+    }
+
+    // Also fetch payments per venta from caja_movimientos
+    const pagadoPorVenta: Record<string, number> = {};
+    if (ventaIds.length > 0) {
+      const { data: cajaMovs } = await supabase
+        .from("caja_movimientos")
+        .select("referencia_id, monto")
+        .eq("tipo", "ingreso")
+        .eq("referencia_tipo", "venta")
+        .in("referencia_id", ventaIds);
+      for (const m of cajaMovs || []) {
+        pagadoPorVenta[m.referencia_id] = (pagadoPorVenta[m.referencia_id] || 0) + m.monto;
+      }
+    }
 
     // Build unified list
     const all: any[] = [];
     for (const v of ventas || []) {
       const isNC = v.tipo_comprobante?.includes("Nota de Crédito");
       const vitems = (v as any).venta_items || [];
+      const saldoPendiente = Math.max(0, saldoPorVenta[v.id] || 0);
+      const pagado = pagadoPorVenta[v.id] || 0;
       all.push({
         id: v.id,
         fecha: v.fecha,
@@ -271,8 +306,11 @@ export default function ClientesPage() {
         forma_pago: v.forma_pago,
         monto: isNC ? -v.total : v.total,
         total: v.total,
+        saldo_pendiente: saldoPendiente,
+        pagado: pagado,
         color: isNC ? "text-emerald-600" : "text-foreground",
         badge: isNC ? "destructive" : "default",
+        cliente_id: clienteId,
       });
     }
     for (const c of cobros || []) {
@@ -300,15 +338,68 @@ export default function ClientesPage() {
     setMovLoading(false);
   };
 
-  const filtered = clients.filter(
-    (c) =>
-      (c.nombre.toLowerCase().includes(search.toLowerCase()) || (c.cuit || "").includes(search)) &&
-      (!vendedorFilter || (c as any).vendedor_id === vendedorFilter)
-  );
+  const openPayMov = (m: any) => {
+    setPayMovVenta(m);
+    setPayMovMonto(m.saldo_pendiente || 0);
+    setPayMovMetodo("Efectivo");
+    setPayMovOpen(true);
+  };
 
-  const inscriptos = clients.filter((c) => c.situacion_iva === "Responsable Inscripto").length;
-  const withBalance = clients.filter((c) => c.saldo > 0).length;
-  const withFavor = clients.filter((c) => c.saldo < 0).length;
+  const handlePayMov = async () => {
+    if (!payMovVenta || payMovMonto <= 0 || !movClient?.id) return;
+    setPayMovSaving(true);
+    const hoy = new Date().toLocaleDateString("en-CA", { timeZone: "America/Argentina/Buenos_Aires" });
+    const hora = new Date().toTimeString().split(" ")[0];
+    const saldoPend = payMovVenta.saldo_pendiente || 0;
+    const montoReal = Math.min(payMovMonto, saldoPend);
+    const restante = saldoPend - montoReal;
+
+    // Register payment in caja
+    await supabase.from("caja_movimientos").insert({
+      fecha: hoy, hora, tipo: "ingreso",
+      descripcion: `Cobro deuda ${payMovVenta.descripcion} — ${clients.find((c) => c.id === movClient?.id)?.nombre || ""}`,
+      metodo_pago: payMovMetodo,
+      monto: montoReal,
+      referencia_id: payMovVenta.id,
+      referencia_tipo: "venta",
+    });
+
+    // Update cuenta_corriente
+    const cli = clients.find((c) => c.id === movClient?.id);
+    const currentSaldo = cli?.saldo || 0;
+    const newSaldo = currentSaldo - montoReal;
+    await supabase.from("cuenta_corriente").insert({
+      cliente_id: movClient?.id,
+      fecha: hoy,
+      comprobante: `Cobro deuda - ${payMovVenta.descripcion}`,
+      descripcion: `Pago de deuda (${payMovMetodo}) — desde Clientes`,
+      debe: 0,
+      haber: montoReal,
+      saldo: Math.max(0, newSaldo),
+      forma_pago: payMovMetodo,
+      venta_id: payMovVenta.id,
+    });
+    await supabase.from("clientes").update({ saldo: Math.max(0, newSaldo) }).eq("id", movClient?.id);
+
+    setPayMovSaving(false);
+    setPayMovOpen(false);
+    // Refresh
+    if (movClient?.id) fetchMovimientos(movClient.id, movDesde, movHasta);
+    fetchClients();
+  };
+
+  const filtered = useMemo(() => {
+    const searchLower = search.toLowerCase();
+    return clients.filter(
+      (c) =>
+        (c.nombre.toLowerCase().includes(searchLower) || (c.cuit || "").includes(search)) &&
+        (!vendedorFilter || (c as any).vendedor_id === vendedorFilter)
+    );
+  }, [clients, search, vendedorFilter]);
+
+  const inscriptos = useMemo(() => clients.filter((c) => c.situacion_iva === "Responsable Inscripto").length, [clients]);
+  const withBalance = useMemo(() => clients.filter((c) => c.saldo > 0).length, [clients]);
+  const withFavor = useMemo(() => clients.filter((c) => c.saldo < 0).length, [clients]);
 
   const f = (key: keyof typeof form, value: string) => setForm({ ...form, [key]: value });
 
@@ -557,7 +648,18 @@ export default function ClientesPage() {
                             <Badge variant="outline" className="text-xs font-normal">{m.forma_pago || "—"}</Badge>
                           </td>
                           <td className={`py-2 px-3 text-right font-semibold ${m.monto < 0 ? "text-emerald-600" : ""}`}>
-                            {m.monto < 0 ? `-${formatCurrency(Math.abs(m.monto))}` : formatCurrency(m.monto)}
+                            <div>{m.monto < 0 ? `-${formatCurrency(Math.abs(m.monto))}` : formatCurrency(m.monto)}</div>
+                            {m.saldo_pendiente > 0 && (
+                              <div className="flex items-center justify-end gap-1.5 mt-1">
+                                <span className="text-[10px] text-orange-600 font-medium">Debe: {formatCurrency(m.saldo_pendiente)}</span>
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); openPayMov(m); }}
+                                  className="text-[10px] bg-emerald-100 text-emerald-700 hover:bg-emerald-200 px-2 py-0.5 rounded-full font-medium transition-colors"
+                                >
+                                  Cobrar
+                                </button>
+                              </div>
+                            )}
                           </td>
                         </tr>
                         {isExp && hasItems && (
@@ -574,14 +676,30 @@ export default function ClientesPage() {
                                     </tr>
                                   </thead>
                                   <tbody>
-                                    {m.items.map((it: any, idx: number) => (
-                                      <tr key={idx} className="border-t border-muted">
-                                        <td className="py-1">{it.descripcion}</td>
-                                        <td className="py-1 text-center">{it.cantidad}</td>
-                                        <td className="py-1 text-right">{formatCurrency(it.precio_unitario)}</td>
-                                        <td className="py-1 text-right font-medium">{formatCurrency(it.subtotal || it.precio_unitario * it.cantidad)}</td>
-                                      </tr>
-                                    ))}
+                                    {m.items.map((it: any, idx: number) => {
+                                      const isBox = it.presentacion && it.presentacion !== "Unidad" && (it.unidades_por_presentacion || 1) > 1;
+                                      const unitPrice = isBox ? it.precio_unitario / (it.unidades_por_presentacion || 1) : it.precio_unitario;
+                                      // Clean "(Unidad)" and duplicate presentation from description
+                                      let displayName = (it.descripcion || "")
+                                        .replace(/\s*[-–]\s*Unidad(\s*\(Unidad\))?$/, "")
+                                        .replace(/\s*\(Unidad\)$/, "")
+                                        .replace(/(\([^)]+\))\s*\1/gi, "$1")
+                                        .replace(/Caja\s*\(?x?0\.5\)?/gi, "Medio Cartón")
+                                        .replace(/(Medio\s*Cart[oó]n)\s*\(?\s*Medio\s*Cart[oó]n\s*\)?/gi, "$1");
+                                      return (
+                                        <tr key={idx} className="border-t border-muted">
+                                          <td className="py-1">
+                                            {displayName}
+                                          </td>
+                                          <td className="py-1 text-center">{(it.unidades_por_presentacion || 1) > 0 && (it.unidades_por_presentacion || 1) < 1 ? it.cantidad * (it.unidades_por_presentacion || 1) : it.cantidad}{isBox ? ` ${it.presentacion}` : ""}</td>
+                                          <td className="py-1 text-right">
+                                            {formatCurrency(unitPrice)}
+                                            {isBox && <span className="text-[10px] text-muted-foreground block">c/u</span>}
+                                          </td>
+                                          <td className="py-1 text-right font-medium">{formatCurrency(it.subtotal || it.precio_unitario * it.cantidad)}</td>
+                                        </tr>
+                                      );
+                                    })}
                                   </tbody>
                                 </table>
                               </div>
@@ -595,6 +713,49 @@ export default function ClientesPage() {
               </table>
               <div className="text-xs text-muted-foreground mt-2 text-right">
                 {movimientos.length} movimiento(s)
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Payment from Movimientos Dialog */}
+      <Dialog open={payMovOpen} onOpenChange={setPayMovOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Cobrar deuda</DialogTitle>
+          </DialogHeader>
+          {payMovVenta && (
+            <div className="space-y-4">
+              <div className="text-sm space-y-1 bg-muted/50 rounded-lg p-3">
+                <div className="flex justify-between"><span className="text-muted-foreground">Comprobante</span><span className="font-mono font-medium text-xs">{payMovVenta.descripcion}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Total</span><span className="font-bold">{formatCurrency(payMovVenta.total)}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Pagado</span><span className="text-emerald-600">{formatCurrency(payMovVenta.pagado || 0)}</span></div>
+                <div className="flex justify-between border-t pt-1"><span className="font-medium">Deuda</span><span className="text-orange-600 font-bold">{formatCurrency(payMovVenta.saldo_pendiente)}</span></div>
+              </div>
+              <div className="space-y-2">
+                <Label className="text-xs font-medium">Método de pago</Label>
+                <div className="flex gap-2">
+                  {(["Efectivo", "Transferencia"] as const).map((m) => (
+                    <button key={m} onClick={() => setPayMovMetodo(m)} className={`flex-1 py-2 rounded-lg text-sm font-medium border transition-all ${payMovMetodo === m ? "bg-gray-900 text-white border-gray-900" : "bg-white text-gray-600 border-gray-200 hover:border-gray-400"}`}>{m}</button>
+                  ))}
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label className="text-xs font-medium">Monto a cobrar</Label>
+                <Input type="number" value={payMovMonto} onChange={(e) => setPayMovMonto(Math.max(0, Math.min(payMovVenta.saldo_pendiente, Number(e.target.value))))} />
+              </div>
+              {payMovMonto < payMovVenta.saldo_pendiente && payMovMonto > 0 && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                  Restará <strong>{formatCurrency(payMovVenta.saldo_pendiente - payMovMonto)}</strong> de deuda en este comprobante.
+                </div>
+              )}
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" size="sm" onClick={() => setPayMovOpen(false)}>Cancelar</Button>
+                <Button size="sm" onClick={handlePayMov} disabled={payMovSaving || payMovMonto <= 0}>
+                  {payMovSaving && <Loader2 className="w-3 h-3 mr-1 animate-spin" />}
+                  Confirmar — {formatCurrency(payMovMonto)}
+                </Button>
               </div>
             </div>
           )}

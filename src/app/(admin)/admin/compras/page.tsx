@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { supabase } from "@/lib/supabase";
 import type { Proveedor } from "@/types/database";
 import { Card, CardContent } from "@/components/ui/card";
@@ -107,6 +107,12 @@ export default function ComprasPage() {
   const [providers, setProviders] = useState<Proveedor[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
+  const [purchaseFilterMode, setPurchaseFilterMode] = useState<"day" | "month" | "range" | "all">("day");
+  const [purchaseFilterDay, setPurchaseFilterDay] = useState(todayString());
+  const [purchaseFilterMonth, setPurchaseFilterMonth] = useState(String(new Date().getMonth() + 1));
+  const [purchaseFilterYear, setPurchaseFilterYear] = useState(String(new Date().getFullYear()));
+  const [purchaseFilterFrom, setPurchaseFilterFrom] = useState(todayString());
+  const [purchaseFilterTo, setPurchaseFilterTo] = useState(todayString());
 
   // New compra state
   const [mode, setMode] = useState<"list" | "new" | "detail">("list");
@@ -130,6 +136,21 @@ export default function ComprasPage() {
   const searchTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const productSearchRef = useRef<HTMLInputElement>(null);
 
+  // F1 product search dialog
+  const [productSearchOpen, setProductSearchOpen] = useState(false);
+
+  useEffect(() => {
+    if (mode !== "new") return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "F1") { e.preventDefault(); setProductSearchOpen(true); }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [mode]);
+
+  // Registrar en caja state
+  const [registrarEnCaja, setRegistrarEnCaja] = useState(true);
+
   // Detail view
   const [detailCompra, setDetailCompra] = useState<CompraRow | null>(null);
   const [detailItems, setDetailItems] = useState<CompraItemRow[]>([]);
@@ -138,21 +159,36 @@ export default function ComprasPage() {
 
   const fetchData = useCallback(async () => {
     setLoading(true);
+    let comprasQuery = supabase
+      .from("compras")
+      .select("id, numero, fecha, proveedor_id, total, estado, observacion, proveedores(nombre)")
+      .order("fecha", { ascending: false });
+
+    if (purchaseFilterMode === "day") {
+      comprasQuery = comprasQuery.eq("fecha", purchaseFilterDay);
+    } else if (purchaseFilterMode === "month") {
+      const m = purchaseFilterMonth.padStart(2, "0");
+      const start = `${purchaseFilterYear}-${m}-01`;
+      const nextMonth = Number(purchaseFilterMonth) === 12 ? 1 : Number(purchaseFilterMonth) + 1;
+      const nextYear = Number(purchaseFilterMonth) === 12 ? Number(purchaseFilterYear) + 1 : Number(purchaseFilterYear);
+      const end = `${nextYear}-${String(nextMonth).padStart(2, "0")}-01`;
+      comprasQuery = comprasQuery.gte("fecha", start).lt("fecha", end);
+    } else if (purchaseFilterMode === "range" && purchaseFilterFrom && purchaseFilterTo) {
+      comprasQuery = comprasQuery.gte("fecha", purchaseFilterFrom).lte("fecha", purchaseFilterTo);
+    }
+
     const [{ data: c }, { data: p }] = await Promise.all([
-      supabase
-        .from("compras")
-        .select("*, proveedores(nombre)")
-        .order("fecha", { ascending: false }),
+      comprasQuery,
       supabase
         .from("proveedores")
-        .select("*")
+        .select("id, nombre")
         .eq("activo", true)
         .order("nombre"),
     ]);
     setPurchases((c as CompraRow[]) || []);
     setProviders(p || []);
     setLoading(false);
-  }, []);
+  }, [purchaseFilterMode, purchaseFilterDay, purchaseFilterMonth, purchaseFilterYear, purchaseFilterFrom, purchaseFilterTo]);
 
   useEffect(() => {
     fetchData();
@@ -220,8 +256,7 @@ export default function ComprasPage() {
     ]);
     setProductSearch("");
     setProductResults([]);
-    // Re-focus the search input for quick consecutive adds
-    setTimeout(() => productSearchRef.current?.focus(), 50);
+    setProductSearchOpen(false);
   };
 
   /* ── item editing ── */
@@ -380,8 +415,8 @@ export default function ComprasPage() {
         }
       }
 
-      // Register caja movement
-      if (totalCompra > 0) {
+      // Register caja movement only if requested and not cuenta corriente
+      if (totalCompra > 0 && registrarEnCaja && formaPago !== "Cuenta Corriente") {
         const prov = providers.find((p) => p.id === selectedProveedorId);
         await supabase.from("caja_movimientos").insert({
           fecha: fecha || todayString(),
@@ -391,6 +426,14 @@ export default function ComprasPage() {
           metodo_pago: formaPago,
           monto: -totalCompra,
         });
+      }
+
+      // If cuenta corriente, update proveedor saldo
+      if (formaPago === "Cuenta Corriente" && selectedProveedorId) {
+        const prov = providers.find((p) => p.id === selectedProveedorId);
+        if (prov) {
+          await supabase.from("proveedores").update({ saldo: (prov.saldo || 0) + totalCompra }).eq("id", selectedProveedorId);
+        }
       }
 
       setSaving(false);
@@ -422,7 +465,7 @@ export default function ComprasPage() {
     setDetailCompra(compra);
     const { data } = await supabase
       .from("compra_items")
-      .select("*")
+      .select("id, codigo, descripcion, cantidad, precio_unitario, subtotal")
       .eq("compra_id", compra.id)
       .order("created_at");
     setDetailItems((data as CompraItemRow[]) || []);
@@ -431,16 +474,17 @@ export default function ComprasPage() {
 
   /* ── stats ── */
 
-  const totalMonth = purchases.reduce((a, p) => a + p.total, 0);
-  const pending = purchases.filter((p) => p.estado === "Pendiente").length;
+  const totalMonth = useMemo(() => purchases.reduce((a, p) => a + p.total, 0), [purchases]);
+  const pending = useMemo(() => purchases.filter((p) => p.estado === "Pendiente").length, [purchases]);
 
-  const filtered = purchases.filter(
-    (p) =>
-      p.numero.toLowerCase().includes(search.toLowerCase()) ||
-      (p.proveedores?.nombre || "")
-        .toLowerCase()
-        .includes(search.toLowerCase())
-  );
+  const filtered = useMemo(() => {
+    const term = search.toLowerCase();
+    return purchases.filter(
+      (p) =>
+        p.numero.toLowerCase().includes(term) ||
+        (p.proveedores?.nombre || "").toLowerCase().includes(term)
+    );
+  }, [purchases, search]);
 
   /* ═══════════════════ RENDER ═══════════════════ */
 
@@ -489,7 +533,7 @@ export default function ComprasPage() {
         {/* Compra details card */}
         <Card>
           <CardContent className="pt-6">
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               {/* Proveedor */}
               <div className="space-y-2">
                 <Label className="text-xs text-muted-foreground flex items-center gap-1.5">
@@ -540,29 +584,6 @@ export default function ComprasPage() {
                 />
               </div>
 
-              {/* Forma de pago */}
-              <div className="space-y-2">
-                <Label className="text-xs text-muted-foreground flex items-center gap-1.5">
-                  <CreditCard className="w-3.5 h-3.5" />
-                  Forma de pago
-                </Label>
-                <Select
-                  value={formaPago}
-                  onValueChange={(v) => setFormaPago(v ?? "")}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="Efectivo">Efectivo</SelectItem>
-                    <SelectItem value="Transferencia">Transferencia</SelectItem>
-                    <SelectItem value="Cheque">Cheque</SelectItem>
-                    <SelectItem value="Cuenta Corriente">
-                      Cuenta Corriente
-                    </SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
             </div>
 
             {/* Observaciones row */}
@@ -579,79 +600,68 @@ export default function ComprasPage() {
           </CardContent>
         </Card>
 
-        {/* Product search */}
-        <Card>
-          <CardContent className="pt-6">
-            <div className="space-y-2">
-              <Label className="text-xs text-muted-foreground font-semibold tracking-wide">
-                AGREGAR PRODUCTO
-              </Label>
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                <Input
-                  ref={productSearchRef}
-                  placeholder="Buscar por nombre o codigo..."
-                  value={productSearch}
-                  onChange={(e) => handleProductSearch(e.target.value)}
-                  className="pl-9"
-                />
-                {searchingProducts && (
-                  <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 animate-spin text-muted-foreground" />
-                )}
-              </div>
-              {productResults.length > 0 && (
-                <div className="border rounded-lg max-h-64 overflow-y-auto shadow-sm">
-                  {productResults.map((p) => {
-                    const alreadyAdded = items.some(
-                      (i) => i.producto_id === p.id
-                    );
-                    return (
-                      <button
-                        key={p.id}
-                        className={`w-full text-left px-4 py-2.5 hover:bg-muted/50 transition-colors text-sm flex items-center gap-3 border-b last:border-0 ${alreadyAdded ? "opacity-40 cursor-not-allowed" : ""}`}
-                        onClick={() => !alreadyAdded && addProduct(p)}
-                        disabled={alreadyAdded}
-                      >
-                        {/* Thumbnail */}
-                        <div className="w-9 h-9 rounded-md bg-muted flex items-center justify-center overflow-hidden flex-shrink-0">
-                          {p.imagen_url ? (
-                            <img
-                              src={p.imagen_url}
-                              alt=""
-                              className="w-full h-full object-cover"
-                            />
-                          ) : (
-                            <ImageIcon className="w-4 h-4 text-muted-foreground/40" />
-                          )}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2">
-                            <span className="font-mono text-xs text-muted-foreground">
-                              {p.codigo}
-                            </span>
-                            <span className="font-medium truncate">
-                              {p.nombre}
-                            </span>
-                          </div>
-                          <div className="text-xs text-muted-foreground mt-0.5">
-                            Stock: {p.stock} | Costo:{" "}
-                            {formatCurrency(p.costo)} | Precio:{" "}
-                            {formatCurrency(p.precio)}
-                          </div>
-                        </div>
-                        {alreadyAdded && (
-                          <Badge variant="secondary" className="text-[10px]">
-                            Agregado
-                          </Badge>
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
+        {/* Add product button */}
+        <div className="flex items-center gap-2">
+          <Button variant="outline" onClick={() => setProductSearchOpen(true)} className="gap-1.5">
+            <Plus className="w-3.5 h-3.5" />
+            Agregar producto <kbd className="ml-1 border rounded px-1 py-0.5 text-[10px] bg-background">F1</kbd>
+          </Button>
+        </div>
+
+        {/* Product search dialog */}
+        <Dialog open={productSearchOpen} onOpenChange={setProductSearchOpen}>
+          <DialogContent className="max-w-md">
+            <DialogHeader><DialogTitle>Agregar producto</DialogTitle></DialogHeader>
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+              <Input
+                ref={productSearchRef}
+                placeholder="Buscar por nombre o codigo..."
+                value={productSearch}
+                onChange={(e) => handleProductSearch(e.target.value)}
+                className="pl-9"
+                autoFocus
+              />
+              {searchingProducts && (
+                <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 animate-spin text-muted-foreground" />
               )}
             </div>
-          </CardContent>
-        </Card>
+            <div className="space-y-1 max-h-72 overflow-y-auto">
+              {productResults.map((p) => {
+                const alreadyAdded = items.some((i) => i.producto_id === p.id);
+                return (
+                  <button
+                    key={p.id}
+                    className={`w-full text-left p-2.5 rounded-lg hover:bg-muted transition-colors text-sm flex items-center gap-3 ${alreadyAdded ? "opacity-40 cursor-not-allowed" : ""}`}
+                    onClick={() => !alreadyAdded && addProduct(p)}
+                    disabled={alreadyAdded}
+                  >
+                    <div className="w-9 h-9 rounded-md bg-muted flex items-center justify-center overflow-hidden flex-shrink-0">
+                      {p.imagen_url ? (
+                        <img src={p.imagen_url} alt="" className="w-full h-full object-cover" />
+                      ) : (
+                        <ImageIcon className="w-4 h-4 text-muted-foreground/40" />
+                      )}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono text-xs text-muted-foreground">{p.codigo}</span>
+                        <span className="font-medium truncate">{p.nombre}</span>
+                      </div>
+                      <div className="text-xs text-muted-foreground mt-0.5">
+                        Stock: {p.stock} | Costo: {formatCurrency(p.costo)} | Precio: {formatCurrency(p.precio)}
+                      </div>
+                    </div>
+                    {alreadyAdded && <Badge variant="secondary" className="text-[10px]">Agregado</Badge>}
+                  </button>
+                );
+              })}
+              {productSearch.length >= 2 && productResults.length === 0 && !searchingProducts && (
+                <p className="text-center py-6 text-sm text-muted-foreground">Sin resultados</p>
+              )}
+            </div>
+          </DialogContent>
+        </Dialog>
 
         {/* Items table */}
         <Card>
@@ -661,7 +671,7 @@ export default function ComprasPage() {
                 <Package className="w-10 h-10 mb-3 opacity-40" />
                 <p className="text-sm">No hay productos en la compra</p>
                 <p className="text-xs mt-1">
-                  Busca y agrega productos con el buscador de arriba
+                  Presiona <kbd className="border rounded px-1 py-0.5 text-[10px] bg-muted">F1</kbd> o el boton Agregar para agregar productos
                 </p>
               </div>
             ) : (
@@ -854,7 +864,7 @@ export default function ComprasPage() {
                 ) : (
                   <Save className="w-4 h-4 mr-2" />
                 )}
-                Confirmar Compra e Ingresar Stock
+                Confirmar Compra
               </Button>
             </div>
           </div>
@@ -881,10 +891,6 @@ export default function ComprasPage() {
                   <span className="font-medium">
                     {new Date(fecha + "T12:00:00").toLocaleDateString("es-AR")}
                   </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Forma de pago</span>
-                  <span className="font-medium">{formaPago}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Productos</span>
@@ -923,6 +929,28 @@ export default function ComprasPage() {
                       producto(s) con costo modificado
                     </span>
                   </span>
+                </label>
+              )}
+
+              {/* Forma de pago */}
+              <div className="space-y-2">
+                <Label className="text-sm font-medium">Forma de pago</Label>
+                <Select value={formaPago} onValueChange={(v) => setFormaPago(v ?? "")}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="Efectivo">Efectivo</SelectItem>
+                    <SelectItem value="Transferencia">Transferencia</SelectItem>
+                    <SelectItem value="Cheque">Cheque</SelectItem>
+                    <SelectItem value="Cuenta Corriente">Cuenta Corriente</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* Registrar en caja */}
+              {(formaPago === "Efectivo" || formaPago === "Transferencia") && (
+                <label className="flex items-center gap-2 cursor-pointer py-2">
+                  <input type="checkbox" checked={registrarEnCaja} onChange={(e) => setRegistrarEnCaja(e.target.checked)} className="rounded" />
+                  <span className="text-sm">Registrar movimiento en caja diaria</span>
                 </label>
               )}
 
@@ -1153,19 +1181,56 @@ export default function ComprasPage() {
       </div>
 
       <Card>
-        <CardContent className="pt-6">
-          <div className="space-y-1.5">
-            <span className="text-xs text-muted-foreground font-semibold tracking-wide">
-              BUSCAR
-            </span>
-            <div className="relative max-w-md">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-              <Input
-                placeholder="Buscar por numero o proveedor..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="pl-9"
-              />
+        <CardContent className="pt-6 space-y-4">
+          <div className="flex items-end gap-4 flex-wrap">
+            <div className="flex-1 max-w-md space-y-1.5">
+              <span className="text-xs text-muted-foreground font-semibold tracking-wide">BUSCAR</span>
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                <Input placeholder="Buscar por numero o proveedor..." value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" />
+              </div>
+            </div>
+            <div className="flex items-end gap-2">
+              <div className="space-y-1">
+                <Label className="text-xs text-muted-foreground">Período</Label>
+                <Select value={purchaseFilterMode} onValueChange={(v) => setPurchaseFilterMode((v ?? "day") as "day" | "month" | "range" | "all")}>
+                  <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Todos</SelectItem>
+                    <SelectItem value="day">Día</SelectItem>
+                    <SelectItem value="month">Mensual</SelectItem>
+                    <SelectItem value="range">Entre fechas</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              {purchaseFilterMode === "day" && (
+                <Input type="date" value={purchaseFilterDay} onChange={(e) => setPurchaseFilterDay(e.target.value)} className="w-40" />
+              )}
+              {purchaseFilterMode === "month" && (
+                <>
+                  <Select value={purchaseFilterMonth} onValueChange={(v) => setPurchaseFilterMonth(v ?? "1")}>
+                    <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"].map((m, i) => (
+                        <SelectItem key={i} value={String(i + 1)}>{m}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Input type="number" value={purchaseFilterYear} onChange={(e) => setPurchaseFilterYear(e.target.value)} className="w-20" />
+                </>
+              )}
+              {purchaseFilterMode === "range" && (
+                <>
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">Desde</Label>
+                    <Input type="date" value={purchaseFilterFrom} onChange={(e) => setPurchaseFilterFrom(e.target.value)} className="w-40" />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">Hasta</Label>
+                    <Input type="date" value={purchaseFilterTo} onChange={(e) => setPurchaseFilterTo(e.target.value)} className="w-40" />
+                  </div>
+                </>
+              )}
             </div>
           </div>
         </CardContent>

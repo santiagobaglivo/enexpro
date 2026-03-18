@@ -97,6 +97,12 @@ export default function NotaCreditoPage() {
   const [ncDetail, setNcDetail] = useState<NCDetail | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [listSearch, setListSearch] = useState("");
+  const [ncFilterMode, setNcFilterMode] = useState<"day" | "month" | "range" | "all">("day");
+  const [ncFilterDay, setNcFilterDay] = useState(new Date().toISOString().split("T")[0]);
+  const [ncFilterMonth, setNcFilterMonth] = useState(String(new Date().getMonth() + 1));
+  const [ncFilterYear, setNcFilterYear] = useState(String(new Date().getFullYear()));
+  const [ncFilterFrom, setNcFilterFrom] = useState("");
+  const [ncFilterTo, setNcFilterTo] = useState("");
 
   // Form state
   const [clients, setClients] = useState<Cliente[]>([]);
@@ -105,7 +111,6 @@ export default function NotaCreditoPage() {
   const [clientId, setClientId] = useState("");
   const [clientSearch, setClientSearch] = useState("");
   const [clientOpen, setClientOpen] = useState(false);
-  const clientRef = useRef<HTMLDivElement>(null);
   const [origenId, setOrigenId] = useState("");
   const [clientVentas, setClientVentas] = useState<Venta[]>([]);
   const [items, setItems] = useState<LineItem[]>([]);
@@ -122,15 +127,30 @@ export default function NotaCreditoPage() {
 
   const fetchNotas = useCallback(async () => {
     setLoadingList(true);
-    const { data } = await supabase
+    let query = supabase
       .from("ventas")
       .select("*, clientes(nombre)")
       .ilike("tipo_comprobante", "Nota de Crédito%")
       .order("fecha", { ascending: false })
-      .limit(100);
+      .limit(200);
+
+    if (ncFilterMode === "day") {
+      query = query.eq("fecha", ncFilterDay);
+    } else if (ncFilterMode === "month") {
+      const m = ncFilterMonth.padStart(2, "0");
+      const start = `${ncFilterYear}-${m}-01`;
+      const nextMonth = Number(ncFilterMonth) === 12 ? 1 : Number(ncFilterMonth) + 1;
+      const nextYear = Number(ncFilterMonth) === 12 ? Number(ncFilterYear) + 1 : Number(ncFilterYear);
+      const end = `${nextYear}-${String(nextMonth).padStart(2, "0")}-01`;
+      query = query.gte("fecha", start).lt("fecha", end);
+    } else if (ncFilterMode === "range" && ncFilterFrom && ncFilterTo) {
+      query = query.gte("fecha", ncFilterFrom).lte("fecha", ncFilterTo);
+    }
+
+    const { data } = await query;
     setNotas((data as NotaCreditoRow[]) || []);
     setLoadingList(false);
-  }, []);
+  }, [ncFilterMode, ncFilterDay, ncFilterMonth, ncFilterYear, ncFilterFrom, ncFilterTo]);
 
   const fetchFormData = useCallback(async () => {
     const [{ data: cls }, { data: prods }] = await Promise.all([
@@ -155,15 +175,6 @@ export default function NotaCreditoPage() {
     fetchFormData();
   }, [fetchNotas, fetchFormData]);
 
-  useEffect(() => {
-    const handleClick = (e: MouseEvent) => {
-      if (clientRef.current && !clientRef.current.contains(e.target as Node)) {
-        setClientOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
-  }, []);
 
   // When client changes, fetch their ventas for origen
   useEffect(() => {
@@ -530,20 +541,64 @@ export default function NotaCreditoPage() {
         {/* ── LISTADO ── */}
         <TabsContent value="listado" className="space-y-4">
           <Card>
-            <CardContent className="pt-6 pb-4">
-              <div className="relative max-w-sm mb-4">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                <Input
-                  placeholder="Buscar por cliente o número..."
-                  value={listSearch}
-                  onChange={(e) => setListSearch(e.target.value)}
-                  className="pl-9"
-                />
-                {listSearch && (
-                  <button className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground" onClick={() => setListSearch("")}>
-                    <X className="w-4 h-4" />
-                  </button>
-                )}
+            <CardContent className="pt-6 pb-4 space-y-4">
+              <div className="flex items-end gap-4 flex-wrap">
+                <div className="relative flex-1 max-w-sm">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                  <Input
+                    placeholder="Buscar por cliente o número..."
+                    value={listSearch}
+                    onChange={(e) => setListSearch(e.target.value)}
+                    className="pl-9"
+                  />
+                  {listSearch && (
+                    <button className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground" onClick={() => setListSearch("")}>
+                      <X className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+                <div className="flex items-end gap-2">
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">Período</Label>
+                    <Select value={ncFilterMode} onValueChange={(v) => setNcFilterMode((v ?? "day") as "day" | "month" | "range" | "all")}>
+                      <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">Todos</SelectItem>
+                        <SelectItem value="day">Día</SelectItem>
+                        <SelectItem value="month">Mensual</SelectItem>
+                        <SelectItem value="range">Entre fechas</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  {ncFilterMode === "day" && (
+                    <Input type="date" value={ncFilterDay} onChange={(e) => setNcFilterDay(e.target.value)} className="w-40" />
+                  )}
+                  {ncFilterMode === "month" && (
+                    <>
+                      <Select value={ncFilterMonth} onValueChange={(v) => setNcFilterMonth(v ?? "1")}>
+                        <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          {["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"].map((m, i) => (
+                            <SelectItem key={i} value={String(i + 1)}>{m}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Input type="number" value={ncFilterYear} onChange={(e) => setNcFilterYear(e.target.value)} className="w-20" />
+                    </>
+                  )}
+                  {ncFilterMode === "range" && (
+                    <>
+                      <div className="flex items-center gap-1">
+                        <Label className="text-xs">Desde</Label>
+                        <Input type="date" value={ncFilterFrom} onChange={(e) => setNcFilterFrom(e.target.value)} className="w-40" />
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <Label className="text-xs">Hasta</Label>
+                        <Input type="date" value={ncFilterTo} onChange={(e) => setNcFilterTo(e.target.value)} className="w-40" />
+                      </div>
+                    </>
+                  )}
+                </div>
               </div>
             </CardContent>
           </Card>
@@ -611,45 +666,44 @@ export default function NotaCreditoPage() {
               {/* Client & Origin */}
               <Card>
                 <CardContent className="pt-6">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div className="space-y-2" ref={clientRef}>
+                  <div className="grid grid-cols-1 md:grid-cols-[1fr_2fr] gap-4">
+                    <div className="space-y-2">
                       <Label className="text-xs text-muted-foreground">Cliente</Label>
-                      <div className="relative">
-                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                        <Input
-                          placeholder="Buscar cliente..."
-                          value={clientId ? (clients.find((c) => c.id === clientId)?.nombre ?? clientSearch) : clientSearch}
-                          onChange={(e) => {
-                            setClientSearch(e.target.value);
-                            setClientOpen(true);
-                            if (clientId) { setClientId(""); setOrigenId(""); setItems([]); }
-                          }}
-                          onFocus={() => setClientOpen(true)}
-                          className="pl-9"
-                        />
+                      <div className="flex gap-2">
+                        <Button variant="outline" className="flex-1 justify-start text-sm font-normal" onClick={() => setClientOpen(true)}>
+                          <Search className="w-4 h-4 mr-2 text-muted-foreground" />
+                          {selectedClient ? selectedClient.nombre : "Buscar cliente..."}
+                        </Button>
                         {clientId && (
-                          <button className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                            onClick={() => { setClientId(""); setClientSearch(""); setOrigenId(""); setItems([]); setClientOpen(false); }}>
+                          <Button variant="ghost" size="icon" className="shrink-0" onClick={() => { setClientId(""); setClientSearch(""); setOrigenId(""); setItems([]); }}>
                             <X className="w-4 h-4" />
-                          </button>
-                        )}
-                        {clientOpen && !clientId && (
-                          <div className="absolute z-50 w-full mt-1 bg-background border rounded-lg shadow-lg max-h-[200px] overflow-y-auto">
-                            {filteredClients.slice(0, 20).map((c) => (
-                              <button key={c.id} className="w-full text-left px-3 py-2 hover:bg-muted text-sm transition-colors"
-                                onClick={() => { setClientId(c.id); setClientSearch(c.nombre); setClientOpen(false); }}>
-                                {c.nombre}
-                              </button>
-                            ))}
-                            {filteredClients.length === 0 && <p className="px-3 py-2 text-sm text-muted-foreground">Sin resultados</p>}
-                          </div>
+                          </Button>
                         )}
                       </div>
+                      <Dialog open={clientOpen} onOpenChange={setClientOpen}>
+                        <DialogContent className="max-w-md">
+                          <DialogHeader><DialogTitle>Seleccionar Cliente</DialogTitle></DialogHeader>
+                          <div className="relative">
+                            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                            <Input placeholder="Buscar por nombre..." value={clientSearch} onChange={(e) => setClientSearch(e.target.value)} className="pl-9" autoFocus />
+                          </div>
+                          <div className="max-h-[300px] overflow-y-auto space-y-0.5">
+                            {filteredClients.slice(0, 30).map((c) => (
+                              <button key={c.id} className="w-full text-left px-3 py-2.5 hover:bg-muted rounded-md text-sm transition-colors"
+                                onClick={() => { setClientId(c.id); setClientSearch(""); setClientOpen(false); }}>
+                                <span className="font-medium">{c.nombre}</span>
+                                {c.telefono && <span className="text-xs text-muted-foreground ml-2">{c.telefono}</span>}
+                              </button>
+                            ))}
+                            {filteredClients.length === 0 && <p className="px-3 py-4 text-sm text-muted-foreground text-center">Sin resultados</p>}
+                          </div>
+                        </DialogContent>
+                      </Dialog>
                     </div>
                     <div className="space-y-2">
                       <Label className="text-xs text-muted-foreground">Comprobante de origen (opcional)</Label>
                       <Select value={origenId} onValueChange={(v) => { setOrigenId(v || ""); setItems([]); }}>
-                        <SelectTrigger>
+                        <SelectTrigger className="w-full truncate">
                           <SelectValue placeholder="Sin referencia" />
                         </SelectTrigger>
                         <SelectContent>

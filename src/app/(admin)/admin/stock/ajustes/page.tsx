@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { supabase } from "@/lib/supabase";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -96,6 +97,14 @@ export default function AjustesStockPage() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [productSearch, setProductSearch] = useState("");
 
+  // Filters
+  const [filterMode, setFilterMode] = useState<"day" | "month" | "range" | "all">("day");
+  const [filterDay, setFilterDay] = useState(todayARG());
+  const [filterMonth, setFilterMonth] = useState(String(new Date().getMonth() + 1));
+  const [filterYear, setFilterYear] = useState(String(new Date().getFullYear()));
+  const [filterFrom, setFilterFrom] = useState(todayARG());
+  const [filterTo, setFilterTo] = useState(todayARG());
+
   // Detail
   const [detailAjuste, setDetailAjuste] = useState<Ajuste | null>(null);
   const [detailItems, setDetailItems] = useState<any[]>([]);
@@ -104,14 +113,29 @@ export default function AjustesStockPage() {
 
   const fetchData = useCallback(async () => {
     setLoading(true);
+    let ajQuery = supabase.from("ajustes_stock").select("*").order("created_at", { ascending: false }).limit(200);
+
+    if (filterMode === "day") {
+      ajQuery = ajQuery.eq("fecha", filterDay);
+    } else if (filterMode === "month") {
+      const m = filterMonth.padStart(2, "0");
+      const start = `${filterYear}-${m}-01`;
+      const nextMonth = Number(filterMonth) === 12 ? 1 : Number(filterMonth) + 1;
+      const nextYear = Number(filterMonth) === 12 ? Number(filterYear) + 1 : Number(filterYear);
+      const end = `${nextYear}-${String(nextMonth).padStart(2, "0")}-01`;
+      ajQuery = ajQuery.gte("fecha", start).lt("fecha", end);
+    } else if (filterMode === "range" && filterFrom && filterTo) {
+      ajQuery = ajQuery.gte("fecha", filterFrom).lte("fecha", filterTo);
+    }
+
     const [{ data: aj }, { data: prods }] = await Promise.all([
-      supabase.from("ajustes_stock").select("*").order("created_at", { ascending: false }).limit(50),
+      ajQuery,
       supabase.from("productos").select("id, codigo, nombre, stock, costo, unidad_medida").eq("activo", true).order("nombre"),
     ]);
     setAjustes((aj as Ajuste[]) || []);
     setProductos((prods as Producto[]) || []);
     setLoading(false);
-  }, []);
+  }, [filterMode, filterDay, filterMonth, filterYear, filterFrom, filterTo]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
@@ -216,7 +240,7 @@ export default function AjustesStockPage() {
           cantidad_antes: stockAntes,
           cantidad_despues: stockDespues,
           cantidad: row.cantidad,
-          referencia: `Baja de stock - ${motivo}`,
+          referencia: `Ajuste de stock - ${motivo}`,
           descripcion: `${motivo}${row.comentario ? `: ${row.comentario}` : ""}`,
           usuario,
           orden_id: ajuste.id,
@@ -249,11 +273,55 @@ export default function AjustesStockPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Ajustes de Stock</h1>
-          <p className="text-muted-foreground text-sm">Bajas por merma, vencimiento, rotura, robo y otros</p>
+          <p className="text-muted-foreground text-sm">Registro de ajustes de inventario</p>
         </div>
         <Button onClick={openNew}>
           <Plus className="w-4 h-4 mr-2" />Nuevo Ajuste
         </Button>
+      </div>
+
+      {/* Filters */}
+      <div className="flex items-end gap-3 flex-wrap">
+        <div className="space-y-1">
+          <Label className="text-xs text-muted-foreground">Período</Label>
+          <Select value={filterMode} onValueChange={(v) => setFilterMode((v ?? "day") as "day" | "month" | "range" | "all")}>
+            <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Todos</SelectItem>
+              <SelectItem value="day">Día</SelectItem>
+              <SelectItem value="month">Mensual</SelectItem>
+              <SelectItem value="range">Entre fechas</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        {filterMode === "day" && (
+          <Input type="date" value={filterDay} onChange={(e) => setFilterDay(e.target.value)} className="w-40" />
+        )}
+        {filterMode === "month" && (
+          <>
+            <Select value={filterMonth} onValueChange={(v) => setFilterMonth(v ?? "1")}>
+              <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"].map((m, i) => (
+                  <SelectItem key={i} value={String(i + 1)}>{m}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Input type="number" value={filterYear} onChange={(e) => setFilterYear(e.target.value)} className="w-20" />
+          </>
+        )}
+        {filterMode === "range" && (
+          <>
+            <div className="flex items-center gap-1">
+              <Label className="text-xs text-muted-foreground">Desde</Label>
+              <Input type="date" value={filterFrom} onChange={(e) => setFilterFrom(e.target.value)} className="w-40" />
+            </div>
+            <div className="flex items-center gap-1">
+              <Label className="text-xs text-muted-foreground">Hasta</Label>
+              <Input type="date" value={filterTo} onChange={(e) => setFilterTo(e.target.value)} className="w-40" />
+            </div>
+          </>
+        )}
       </div>
 
       {/* History table */}
@@ -298,7 +366,7 @@ export default function AjustesStockPage() {
         <Dialog open={!!detailAjuste} onOpenChange={() => setDetailAjuste(null)}>
           <DialogContent className="max-w-lg">
             <DialogHeader>
-              <DialogTitle>Baja de stock — {formatDate(detailAjuste.fecha)}</DialogTitle>
+              <DialogTitle>Ajuste de stock — {formatDate(detailAjuste.fecha)}</DialogTitle>
             </DialogHeader>
             <div className="text-sm text-muted-foreground mb-3">
               <span className="font-medium">{detailAjuste.motivo}</span>
@@ -340,7 +408,7 @@ export default function AjustesStockPage() {
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent className="max-w-5xl max-h-[95vh] flex flex-col p-0 gap-0">
           <DialogHeader className="px-6 py-4 border-b shrink-0">
-            <DialogTitle className="text-base font-semibold">Bajas de stock</DialogTitle>
+            <DialogTitle className="text-base font-semibold">Ajuste de Stock</DialogTitle>
           </DialogHeader>
 
           {/* Form header */}

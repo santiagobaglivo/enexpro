@@ -177,6 +177,7 @@ export interface Venta {
   total: number;
   estado: string;
   observacion: string | null;
+  metodo_entrega: string | null;
   created_at: string;
 }
 

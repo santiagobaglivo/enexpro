@@ -83,6 +83,8 @@ interface VentaItemRow {
   precio_unitario: number;
   descuento: number;
   subtotal: number;
+  presentacion?: string;
+  unidades_por_presentacion?: number;
 }
 
 function formatCurrency(value: number) {
@@ -101,7 +103,8 @@ export default function ListadoVentasPage() {
   const [filterOrigen, setFilterOrigen] = useState("all");
   const [filterType, setFilterType] = useState("all");
   const [filterPayment, setFilterPayment] = useState("all");
-  const [filterMode, setFilterMode] = useState<"month" | "range" | "all">("month");
+  const [filterMode, setFilterMode] = useState<"day" | "month" | "range" | "all">("day");
+  const [filterDay, setFilterDay] = useState(new Date().toISOString().split("T")[0]);
   const [filterMonth, setFilterMonth] = useState(String(new Date().getMonth() + 1));
   const [filterYear, setFilterYear] = useState(String(new Date().getFullYear()));
   const [filterFrom, setFilterFrom] = useState("");
@@ -123,6 +126,7 @@ export default function ListadoVentasPage() {
   // Print
   const [empresa, setEmpresa] = useState<Empresa | null>(null);
   const [vendedores, setVendedores] = useState<{ id: string; nombre: string }[]>([]);
+  const [receiptConfig, setReceiptConfig] = useState(defaultReceiptConfig);
   const [printVenta, setPrintVenta] = useState<VentaRow | null>(null);
   const [printItems, setPrintItems] = useState<VentaItemRow[]>([]);
   const [printLineItems, setPrintLineItems] = useState<ReceiptLineItem[]>([]);
@@ -143,7 +147,9 @@ export default function ListadoVentasPage() {
     if (filterType !== "all") query = query.eq("tipo_comprobante", filterType);
     if (filterPayment !== "all") query = query.eq("forma_pago", filterPayment);
 
-    if (filterMode === "month") {
+    if (filterMode === "day") {
+      query = query.eq("fecha", filterDay);
+    } else if (filterMode === "month") {
       const m = filterMonth.padStart(2, "0");
       const start = `${filterYear}-${m}-01`;
       const nextMonth = Number(filterMonth) === 12 ? 1 : Number(filterMonth) + 1;
@@ -166,13 +172,18 @@ export default function ListadoVentasPage() {
 
     setVentas(results);
     setLoading(false);
-  }, [filterOrigen, filterType, filterPayment, filterMode, filterMonth, filterYear, filterFrom, filterTo, searchClient]);
+  }, [filterOrigen, filterType, filterPayment, filterMode, filterDay, filterMonth, filterYear, filterFrom, filterTo, searchClient]);
 
   useEffect(() => { fetchVentas(); }, [fetchVentas]);
 
   useEffect(() => {
     supabase.from("empresa").select("*").limit(1).single().then(({ data }) => setEmpresa(data));
     supabase.from("usuarios").select("id, nombre").eq("activo", true).then(({ data }) => setVendedores(data || []));
+    // Load saved receipt config
+    try {
+      const stored = localStorage.getItem("receipt_config");
+      if (stored) setReceiptConfig((prev) => ({ ...prev, ...JSON.parse(stored) }));
+    } catch {}
   }, []);
 
   const openDetail = async (v: VentaRow) => {
@@ -232,8 +243,8 @@ export default function ListadoVentasPage() {
       price: item.precio_unitario,
       discount: item.descuento,
       subtotal: item.subtotal,
-      presentacion: "",
-      unidades_por_presentacion: 1,
+      presentacion: (item as any).presentacion || "",
+      unidades_por_presentacion: (item as any).unidades_por_presentacion ?? 1,
       stock: 0,
       es_combo: comboIds.has(item.producto_id || ""),
       comboItems: comboItemsMap[item.producto_id || ""] || [],
@@ -329,7 +340,7 @@ export default function ListadoVentasPage() {
 
       {/* Filters */}
       <Card>
-        <CardContent className="pt-6 space-y-4">
+        <CardContent className="pt-6 space-y-4 overflow-visible">
           <div className="flex items-end gap-4">
             <div className="flex-1 max-w-md space-y-1.5">
               <span className="text-xs text-muted-foreground font-semibold tracking-wide">BUSCAR</span>
@@ -344,7 +355,7 @@ export default function ListadoVentasPage() {
           </div>
           {showFilters && (
             <div className="border-t pt-4">
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4 overflow-visible">
                 <div className="space-y-1.5">
                   <Label className="text-xs text-muted-foreground font-semibold tracking-wide uppercase">Origen</Label>
                   <Select value={filterOrigen} onValueChange={(v) => setFilterOrigen(v ?? "all")}>
@@ -386,16 +397,23 @@ export default function ListadoVentasPage() {
                 </div>
                 <div className="space-y-1.5">
                   <Label className="text-xs text-muted-foreground font-semibold tracking-wide uppercase">Período</Label>
-                  <Select value={filterMode} onValueChange={(v) => setFilterMode((v ?? "month") as "month" | "range" | "all")}>
+                  <Select value={filterMode} onValueChange={(v) => setFilterMode((v ?? "day") as "day" | "month" | "range" | "all")}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="month">Por mes</SelectItem>
+                      <SelectItem value="all">Todos</SelectItem>
+                      <SelectItem value="day">Día</SelectItem>
+                      <SelectItem value="month">Mensual</SelectItem>
                       <SelectItem value="range">Entre fechas</SelectItem>
-                      <SelectItem value="all">Todas</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
               </div>
+              {filterMode === "day" && (
+                <div className="flex gap-2 mt-3 items-center">
+                  <Label className="text-xs">Fecha</Label>
+                  <Input type="date" value={filterDay} onChange={(e) => setFilterDay(e.target.value)} className="w-44" />
+                </div>
+              )}
               {filterMode === "month" && (
                 <div className="flex gap-2 mt-3">
                   <Select value={filterMonth} onValueChange={(v) => setFilterMonth(v ?? "1")}>
@@ -543,15 +561,24 @@ export default function ListadoVentasPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {detailItems.map((item) => (
+                    {detailItems.map((item) => {
+                      // Clean "(Unidad)" and duplicate presentation from description
+                      const cleanDesc = item.descripcion
+                        .replace(/\s*[-–]\s*Unidad(\s*\(Unidad\))?$/, "")
+                        .replace(/\s*\(Unidad\)$/, "")
+                        .replace(/(\([^)]+\))\s*\1/gi, "$1")
+                        .replace(/Caja\s*\(?x?0\.5\)?/gi, "Medio Cartón")
+                        .replace(/(Medio\s*Cart[oó]n)\s*\(?\s*Medio\s*Cart[oó]n\s*\)?/gi, "$1");
+                      return (
                       <tr key={item.id} className="border-b last:border-0">
                         <td className="py-2 px-3 font-mono text-xs text-muted-foreground">{item.codigo}</td>
-                        <td className="py-2 px-3">{item.descripcion}</td>
-                        <td className="py-2 px-3 text-center">{item.cantidad}</td>
+                        <td className="py-2 px-3">{cleanDesc}</td>
+                        <td className="py-2 px-3 text-center">{(item.unidades_por_presentacion ?? 1) > 0 && (item.unidades_por_presentacion ?? 1) < 1 ? item.cantidad * (item.unidades_por_presentacion ?? 1) : item.cantidad}</td>
                         <td className="py-2 px-3 text-right">{formatCurrency(item.precio_unitario)}</td>
                         <td className="py-2 px-3 text-right font-semibold">{formatCurrency(item.subtotal)}</td>
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -568,12 +595,13 @@ export default function ListadoVentasPage() {
         <div style={{ position: "fixed", left: "-9999px", top: 0 }} ref={printRef}>
           <ReceiptPrintView
             config={{
-              ...defaultReceiptConfig,
-              empresaDomicilio: empresa?.domicilio || defaultReceiptConfig.empresaDomicilio,
-              empresaTelefono: empresa?.telefono || defaultReceiptConfig.empresaTelefono,
-              empresaCuit: empresa?.cuit || defaultReceiptConfig.empresaCuit,
-              empresaIva: empresa?.situacion_iva || defaultReceiptConfig.empresaIva,
-              empresaIngrBrutos: empresa?.cuit || defaultReceiptConfig.empresaIngrBrutos,
+              ...receiptConfig,
+              empresaDomicilio: empresa?.domicilio || receiptConfig.empresaDomicilio,
+              empresaTelefono: empresa?.telefono || receiptConfig.empresaTelefono,
+              empresaCuit: empresa?.cuit || receiptConfig.empresaCuit,
+              empresaIva: empresa?.situacion_iva || receiptConfig.empresaIva,
+              empresaIngrBrutos: empresa?.cuit || receiptConfig.empresaIngrBrutos,
+              empresaNombre: empresa?.nombre || receiptConfig.empresaNombre,
             }}
             sale={{
               numero: printVenta.numero,

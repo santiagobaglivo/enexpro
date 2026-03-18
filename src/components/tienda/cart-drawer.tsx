@@ -13,6 +13,8 @@ interface CartItem {
   precio: number;
   cantidad: number;
   imagen: string;
+  precio_original?: number;
+  descuento?: number;
 }
 
 interface CartContextType {
@@ -48,10 +50,20 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
   const [isOpen, setIsOpen] = useState(false);
 
   useEffect(() => {
-    try {
-      const stored = localStorage.getItem("carrito");
-      if (stored) setItems(JSON.parse(stored));
-    } catch {}
+    function syncFromStorage() {
+      try {
+        const stored = localStorage.getItem("carrito");
+        if (stored) setItems(JSON.parse(stored));
+        else setItems([]);
+      } catch {}
+    }
+    syncFromStorage();
+    window.addEventListener("cart-updated", syncFromStorage);
+    window.addEventListener("storage", syncFromStorage);
+    return () => {
+      window.removeEventListener("cart-updated", syncFromStorage);
+      window.removeEventListener("storage", syncFromStorage);
+    };
   }, []);
 
   const persist = useCallback((next: CartItem[]) => {
@@ -158,6 +170,7 @@ function CartDrawer() {
     const otherUnits = items
       .filter((i) => i.id !== item.id && i.id.startsWith(prodId + "_"))
       .reduce((sum, i) => {
+        if (i.id.includes("Medio Cartón")) return sum + i.cantidad * 0.5;
         const m = i.id.match(/Caja \(x(\d+)\)/);
         return sum + i.cantidad * (m ? Number(m[1]) : 1);
       }, 0);
@@ -252,9 +265,21 @@ function CartDrawer() {
                         {item.presentacion}
                       </span>
                     )}
-                    <span className="mt-1 text-sm font-bold text-gray-900">
-                      {formatCurrency(item.precio)}
-                    </span>
+                    <div className="mt-1 flex items-center gap-1.5">
+                      <span className="text-sm font-bold text-gray-900">
+                        {formatCurrency(item.precio)}
+                      </span>
+                      {item.descuento && item.descuento > 0 && item.precio_original && (
+                        <>
+                          <span className="text-xs text-gray-400 line-through">
+                            {formatCurrency(item.precio_original)}
+                          </span>
+                          <span className="rounded bg-pink-100 px-1.5 py-0.5 text-[10px] font-semibold text-pink-600">
+                            -{item.descuento}%
+                          </span>
+                        </>
+                      )}
+                    </div>
                     <div className="mt-2 flex items-center">
                       {/* Quantity controls */}
                       {(() => {

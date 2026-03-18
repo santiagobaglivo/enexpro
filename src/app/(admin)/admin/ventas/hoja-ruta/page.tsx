@@ -5,7 +5,15 @@ import { supabase } from "@/lib/supabase";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   Dialog,
   DialogContent,
@@ -49,8 +57,15 @@ interface VentaRow {
   observacion: string | null;
   entregado: boolean;
   cliente_id: string | null;
+  origen: string | null;
+  metodo_entrega: string | null;
   clientes: ClienteInfo | null;
   venta_items: VentaItemRow[];
+}
+
+interface CuentaBancaria {
+  id: string;
+  nombre: string;
 }
 
 interface VentaItemRow {
@@ -83,21 +98,30 @@ export default function HojaDeRutaPage() {
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailVenta, setDetailVenta] = useState<VentaRow | null>(null);
   const [orden, setOrden] = useState<Record<string, number>>({});
+  const [filterEntrega, setFilterEntrega] = useState<"todos" | "envio" | "retiro">("todos");
+  const [search, setSearch] = useState("");
+  const [showAllPending, setShowAllPending] = useState(true);
 
   // Track how much was actually paid per order (from caja_movimientos)
   const [pagadoPorVenta, setPagadoPorVenta] = useState<Record<string, number>>({});
 
   const fetchVentas = useCallback(async () => {
     setLoading(true);
-    const { data, error } = await supabase
+    let query = supabase
       .from("ventas")
       .select(
-        "id, numero, tipo_comprobante, fecha, forma_pago, total, estado, observacion, entregado, cliente_id, clientes(id, nombre, domicilio, localidad, telefono, saldo), venta_items(id, descripcion, cantidad, precio_unitario, subtotal, unidad_medida)"
+        "id, numero, tipo_comprobante, fecha, forma_pago, total, estado, observacion, entregado, cliente_id, origen, metodo_entrega, clientes(id, nombre, domicilio, localidad, telefono, saldo), venta_items(id, descripcion, cantidad, precio_unitario, subtotal, unidad_medida)"
       )
       .eq("entregado", false)
-      .eq("fecha", selectedDate)
       .neq("estado", "anulada")
-      .order("created_at", { ascending: true });
+      .order("created_at", { ascending: false });
+
+    // If not showing all pending, filter by selected date only
+    if (!showAllPending) {
+      query = query.eq("fecha", selectedDate);
+    }
+
+    const { data, error } = await query;
 
     if (error) {
       console.error(error);
@@ -136,7 +160,7 @@ export default function HojaDeRutaPage() {
 
     setLoading(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedDate]);
+  }, [selectedDate, showAllPending]);
 
   useEffect(() => {
     fetchVentas();
@@ -159,6 +183,118 @@ export default function HojaDeRutaPage() {
     setDetailOpen(true);
   };
 
+  // Payment dialog state
+  const [payDialogOpen, setPayDialogOpen] = useState(false);
+  const [payVenta, setPayVenta] = useState<VentaRow | null>(null);
+  const [payMetodo, setPayMetodo] = useState<"Efectivo" | "Transferencia" | "Mixto">("Efectivo");
+  const [payMonto, setPayMonto] = useState(0);
+  const [payEfectivo, setPayEfectivo] = useState(0);
+  const [payTransferencia, setPayTransferencia] = useState(0);
+  const [payCuentaBancariaId, setPayCuentaBancariaId] = useState("");
+  const [paySaving, setPaySaving] = useState(false);
+  const [cuentasBancarias, setCuentasBancarias] = useState<CuentaBancaria[]>([]);
+
+  // Load bank accounts
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem("cuentas_bancarias");
+      if (stored) setCuentasBancarias(JSON.parse(stored));
+    } catch {}
+  }, []);
+
+  const openPayDialog = (v: VentaRow) => {
+    const pagado = pagadoPorVenta[v.id] || 0;
+    const debe = Math.max(0, v.total - pagado);
+    setPayVenta(v);
+    // Default to the payment method the client selected
+    const metodoOriginal = v.forma_pago === "Transferencia" ? "Transferencia" : v.forma_pago === "Mixto" ? "Mixto" : "Efectivo";
+    setPayMetodo(metodoOriginal);
+    setPayMonto(debe);
+    setPayEfectivo(metodoOriginal === "Mixto" ? Math.floor(debe / 2) : debe);
+    setPayTransferencia(metodoOriginal === "Mixto" ? debe - Math.floor(debe / 2) : 0);
+    setPayCuentaBancariaId("");
+    setPayDialogOpen(true);
+  };
+
+  const handleRegistrarPago = async () => {
+    if (!payVenta) return;
+    const pagado = pagadoPorVenta[payVenta.id] || 0;
+    const debe = Math.max(0, payVenta.total - pagado);
+
+    // Calculate total being paid
+    let totalPagando = 0;
+    if (payMetodo === "Mixto") {
+      totalPagando = payEfectivo + payTransferencia;
+    } else {
+      totalPagando = payMonto;
+    }
+    if (totalPagando <= 0) return;
+
+    setPaySaving(true);
+    const hoy = getArgentinaToday();
+    const hora = new Date().toTimeString().split(" ")[0];
+    const montoReal = Math.min(totalPagando, debe);
+    const saldoPendiente = debe - montoReal;
+    const cuentaSeleccionada = payCuentaBancariaId ? cuentasBancarias.find((c) => c.id === payCuentaBancariaId) : null;
+
+    // Register payment(s) in caja
+    if (payMetodo === "Mixto") {
+      if (payEfectivo > 0) {
+        await supabase.from("caja_movimientos").insert({
+          fecha: hoy, hora, tipo: "ingreso",
+          descripcion: `Cobro entrega #${payVenta.numero} (Efectivo) — ${payVenta.clientes?.nombre || ""}`,
+          metodo_pago: "Efectivo",
+          monto: Math.min(payEfectivo, debe),
+          referencia_id: payVenta.id, referencia_tipo: "venta",
+        });
+      }
+      if (payTransferencia > 0) {
+        await supabase.from("caja_movimientos").insert({
+          fecha: hoy, hora, tipo: "ingreso",
+          descripcion: `Cobro entrega #${payVenta.numero} (Transferencia) — ${payVenta.clientes?.nombre || ""}${cuentaSeleccionada ? ` → ${cuentaSeleccionada.nombre}` : ""}`,
+          metodo_pago: "Transferencia",
+          monto: Math.min(payTransferencia, debe - Math.min(payEfectivo, debe)),
+          referencia_id: payVenta.id, referencia_tipo: "venta",
+          ...(cuentaSeleccionada ? { cuenta_bancaria: cuentaSeleccionada.nombre } : {}),
+        });
+      }
+    } else {
+      await supabase.from("caja_movimientos").insert({
+        fecha: hoy, hora, tipo: "ingreso",
+        descripcion: `Cobro entrega #${payVenta.numero} (${payMetodo}) — ${payVenta.clientes?.nombre || ""}${payMetodo === "Transferencia" && cuentaSeleccionada ? ` → ${cuentaSeleccionada.nombre}` : ""}`,
+        metodo_pago: payMetodo,
+        monto: montoReal,
+        referencia_id: payVenta.id, referencia_tipo: "venta",
+        ...(payMetodo === "Transferencia" && cuentaSeleccionada ? { cuenta_bancaria: cuentaSeleccionada.nombre } : {}),
+      });
+    }
+
+    // If there's a pending balance, add to client's cuenta corriente
+    if (saldoPendiente > 0 && payVenta.cliente_id) {
+      const clientSaldo = payVenta.clientes?.saldo || 0;
+      const newSaldo = clientSaldo + saldoPendiente;
+      await supabase.from("cuenta_corriente").insert({
+        cliente_id: payVenta.cliente_id,
+        fecha: hoy,
+        comprobante: `Saldo pendiente #${payVenta.numero}`,
+        descripcion: `Saldo pendiente de entrega — ${payVenta.numero}`,
+        debe: saldoPendiente,
+        haber: 0,
+        saldo: newSaldo,
+        forma_pago: "Cuenta Corriente",
+        venta_id: payVenta.id,
+      });
+      await supabase.from("clientes").update({ saldo: newSaldo }).eq("id", payVenta.cliente_id);
+    }
+
+    // Update venta forma_pago to reflect actual payment
+    await supabase.from("ventas").update({ forma_pago: payMetodo }).eq("id", payVenta.id);
+
+    setPaySaving(false);
+    setPayDialogOpen(false);
+    fetchVentas();
+  };
+
   const handleOrdenChange = (id: string, value: string) => {
     const num = parseInt(value, 10);
     if (!isNaN(num) && num > 0) {
@@ -174,27 +310,44 @@ export default function HojaDeRutaPage() {
     });
   };
 
-  // Sort ventas by their order number
-  const sortedVentas = [...ventas].sort(
-    (a, b) => (orden[a.id] ?? 999) - (orden[b.id] ?? 999)
-  );
+  // Filter and sort ventas
+  const filteredVentas = ventas.filter((v) => {
+    if (filterEntrega === "envio" && v.metodo_entrega !== "envio") return false;
+    if (filterEntrega === "retiro" && v.metodo_entrega !== "retiro" && v.metodo_entrega !== "retiro_local" && v.metodo_entrega !== null) return false;
+    if (search) {
+      const s = search.toLowerCase();
+      if (!v.numero.toLowerCase().includes(s) && !(v.clientes?.nombre || "").toLowerCase().includes(s)) return false;
+    }
+    return true;
+  });
+  const sortedVentas = [...filteredVentas].sort((a, b) => {
+    // If both have custom order, use it; otherwise sort by most recent first (array already sorted desc from query)
+    const oa = orden[a.id];
+    const ob = orden[b.id];
+    if (oa !== undefined && ob !== undefined) return oa - ob;
+    return 0; // preserve query order (most recent first)
+  });
 
-  // Stats
-  const totalPedidos = ventas.length;
-  const valorTotal = ventas.reduce((s, v) => s + v.total, 0);
-  const totalYaPagado = ventas.reduce((s, v) => s + (pagadoPorVenta[v.id] || 0), 0);
+  // Stats (from filtered)
+  const totalPedidos = filteredVentas.length;
+  const valorTotal = filteredVentas.reduce((s, v) => s + v.total, 0);
+  const totalYaPagado = filteredVentas.reduce((s, v) => s + (pagadoPorVenta[v.id] || 0), 0);
   const totalACobrar = Math.max(0, valorTotal - totalYaPagado);
 
-  const tabs = [
+  // Counts per filter
+  const countEnvio = ventas.filter((v) => v.metodo_entrega === "envio").length;
+  const countRetiro = ventas.filter((v) => v.metodo_entrega === "retiro" || v.metodo_entrega === "retiro_local" || !v.metodo_entrega).length;
+
+  const navTabs = [
     { name: "Todas las Ventas", href: "/ventas/listado" },
-    { name: "Hoja de Ruta", href: "/ventas/hoja-ruta" },
+    { name: "Entregas y Ruta", href: "/ventas/hoja-ruta" },
   ];
 
   return (
     <div className="p-6 space-y-6">
-      {/* Tabs */}
+      {/* Nav Tabs */}
       <div className="bg-gray-100 rounded-xl p-1 inline-flex">
-        {tabs.map((tab) => (
+        {navTabs.map((tab) => (
           <Link
             key={tab.href}
             href={tab.href}
@@ -213,15 +366,61 @@ export default function HojaDeRutaPage() {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <Truck className="w-7 h-7 text-gray-700" />
-          <h1 className="text-2xl font-bold text-gray-900">Hoja de Ruta</h1>
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900">Entregas y Hoja de Ruta</h1>
+            <p className="text-sm text-gray-500">Gestiona entregas pendientes, cobros y hoja de ruta</p>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <Calendar className="w-5 h-5 text-gray-400" />
-          <Input
-            type="date"
-            value={selectedDate}
-            onChange={(e) => setSelectedDate(e.target.value)}
-            className="w-44"
+        <div className="flex items-center gap-3">
+          <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={showAllPending}
+              onChange={(e) => setShowAllPending(e.target.checked)}
+              className="rounded border-gray-300"
+            />
+            Todas las pendientes
+          </label>
+          {!showAllPending && (
+            <div className="flex items-center gap-2">
+              <Calendar className="w-5 h-5 text-gray-400" />
+              <Input
+                type="date"
+                value={selectedDate}
+                onChange={(e) => setSelectedDate(e.target.value)}
+                className="w-44"
+              />
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Filter tabs: Envío / Retiro / Todos */}
+      <div className="flex items-center gap-3">
+        <div className="bg-gray-100 rounded-lg p-1 inline-flex">
+          {([
+            { key: "envio" as const, label: "Envío a domicilio", count: countEnvio },
+            { key: "retiro" as const, label: "Retiro en local", count: countRetiro },
+            { key: "todos" as const, label: "Todos", count: ventas.length },
+          ]).map((f) => (
+            <button
+              key={f.key}
+              onClick={() => setFilterEntrega(f.key)}
+              className={`rounded-md px-4 py-2 text-sm transition-all ${
+                filterEntrega === f.key ? "bg-white shadow-sm font-semibold text-gray-900" : "text-gray-500 hover:text-gray-700"
+              }`}
+            >
+              {f.label} {f.count > 0 && <span className="ml-1 text-xs bg-gray-200 text-gray-600 rounded-full px-1.5 py-0.5">{f.count}</span>}
+            </button>
+          ))}
+        </div>
+        <div className="relative flex-1 max-w-xs">
+          <input
+            type="text"
+            placeholder="Buscar por N° o cliente..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="w-full h-9 pl-3 pr-3 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-300"
           />
         </div>
       </div>
@@ -334,7 +533,9 @@ export default function HojaDeRutaPage() {
                   <tr className="border-b text-left text-gray-500">
                     <th className="pb-3 px-3 w-24">Orden</th>
                     <th className="pb-3 px-3">Nro. Venta</th>
+                    <th className="pb-3 px-3">Fecha</th>
                     <th className="pb-3 px-3">Cliente</th>
+                    <th className="pb-3 px-3">Entrega</th>
                     <th className="pb-3 px-3">Direccion</th>
                     <th className="pb-3 px-3 text-right">Total</th>
                     <th className="pb-3 px-3 text-right">Pagado</th>
@@ -385,9 +586,16 @@ export default function HojaDeRutaPage() {
                           <div className="font-mono text-xs font-semibold text-gray-700">
                             {venta.numero}
                           </div>
-                          <div className="text-xs text-gray-400 mt-0.5">
-                            {venta.tipo_comprobante}
+                          <div className="flex items-center gap-1.5 mt-0.5">
+                            <span className="text-xs text-gray-400">{venta.tipo_comprobante}</span>
+                            {venta.origen === "tienda" && (
+                              <Badge variant="outline" className="text-[10px] px-1.5 py-0 border-pink-300 text-pink-600 bg-pink-50">Web</Badge>
+                            )}
                           </div>
+                          <div className="text-[10px] text-gray-400 mt-0.5">Pago: {venta.forma_pago}</div>
+                        </td>
+                        <td className="py-3 px-3 text-xs text-gray-500">
+                          {venta.fecha}
                         </td>
                         <td className="py-3 px-3">
                           <div className="font-medium text-gray-900">
@@ -399,6 +607,11 @@ export default function HojaDeRutaPage() {
                               {venta.clientes.telefono}
                             </div>
                           )}
+                        </td>
+                        <td className="py-3 px-3">
+                          <Badge variant={venta.metodo_entrega === "envio" ? "default" : "secondary"} className={`text-xs ${venta.metodo_entrega === "envio" ? "bg-blue-100 text-blue-700 hover:bg-blue-100" : "bg-gray-100 text-gray-600 hover:bg-gray-100"}`}>
+                            {venta.metodo_entrega === "envio" ? "Envío" : "Retiro en local"}
+                          </Badge>
                         </td>
                         <td className="py-3 px-3">
                           <div className="flex items-start gap-1.5">
@@ -436,6 +649,18 @@ export default function HojaDeRutaPage() {
                         </td>
                         <td className="py-3 px-3">
                           <div className="flex items-center justify-end gap-1">
+                            {debe > 0 && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="h-7 text-xs text-emerald-600 border-emerald-300 hover:bg-emerald-50"
+                                onClick={() => openPayDialog(venta)}
+                                title="Registrar pago"
+                              >
+                                <DollarSign className="w-3 h-3 mr-1" />
+                                Cobrar
+                              </Button>
+                            )}
                             <Button
                               variant="ghost"
                               size="icon"
@@ -446,13 +671,14 @@ export default function HojaDeRutaPage() {
                               <Eye className="w-4 h-4 text-gray-500" />
                             </Button>
                             <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8"
+                              variant="outline"
+                              size="sm"
+                              className="h-7 text-xs text-green-600 border-green-300 hover:bg-green-50"
                               onClick={() => handleMarkDelivered(venta.id)}
                               title="Marcar como entregado"
                             >
-                              <CheckCircle className="w-4 h-4 text-green-500" />
+                              <CheckCircle className="w-3 h-3 mr-1" />
+                              Entregado
                             </Button>
                           </div>
                         </td>
@@ -575,6 +801,122 @@ export default function HojaDeRutaPage() {
               </div>
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Payment Dialog */}
+      <Dialog open={payDialogOpen} onOpenChange={setPayDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Registrar Pago</DialogTitle>
+          </DialogHeader>
+          {payVenta && (() => {
+            const pagado = pagadoPorVenta[payVenta.id] || 0;
+            const debe = Math.max(0, payVenta.total - pagado);
+            const totalPagando = payMetodo === "Mixto" ? payEfectivo + payTransferencia : payMonto;
+            const saldoPendiente = debe - Math.min(totalPagando, debe);
+            return (
+              <div className="space-y-4">
+                {/* Summary */}
+                <div className="text-sm space-y-1 bg-gray-50 rounded-lg p-3">
+                  <div className="flex justify-between"><span className="text-muted-foreground">Venta</span><span className="font-mono font-medium">{payVenta.numero}</span></div>
+                  <div className="flex justify-between"><span className="text-muted-foreground">Cliente</span><span className="font-medium">{payVenta.clientes?.nombre || "—"}</span></div>
+                  <div className="flex justify-between"><span className="text-muted-foreground">Total</span><span className="font-bold">{formatCurrency(payVenta.total)}</span></div>
+                  {pagado > 0 && <div className="flex justify-between"><span className="text-muted-foreground">Ya pagado</span><span className="text-emerald-600">{formatCurrency(pagado)}</span></div>}
+                  <div className="flex justify-between border-t pt-1 mt-1"><span className="text-muted-foreground font-medium">Debe</span><span className="text-orange-600 font-bold">{formatCurrency(debe)}</span></div>
+                  {payVenta.origen === "tienda" && (
+                    <div className="flex justify-between"><span className="text-muted-foreground">Pago elegido por cliente</span><span className="font-medium">{payVenta.forma_pago}</span></div>
+                  )}
+                </div>
+
+                {/* Payment method */}
+                <div className="space-y-2">
+                  <Label>Método de pago</Label>
+                  <div className="flex gap-2">
+                    {(["Efectivo", "Transferencia", "Mixto"] as const).map((m) => (
+                      <button
+                        key={m}
+                        onClick={() => {
+                          setPayMetodo(m);
+                          if (m === "Mixto") { setPayEfectivo(Math.floor(debe / 2)); setPayTransferencia(debe - Math.floor(debe / 2)); }
+                          else { setPayMonto(debe); }
+                        }}
+                        className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium border transition-all ${
+                          payMetodo === m ? "bg-gray-900 text-white border-gray-900" : "bg-white text-gray-600 border-gray-200 hover:border-gray-400"
+                        }`}
+                      >
+                        {m}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Amount inputs */}
+                {payMetodo === "Mixto" ? (
+                  <div className="space-y-3">
+                    <div className="space-y-1.5">
+                      <Label className="text-xs">Efectivo</Label>
+                      <Input type="number" value={payEfectivo} onChange={(e) => { const v = Math.max(0, Number(e.target.value)); setPayEfectivo(v); setPayTransferencia(Math.max(0, debe - v)); }} min={0} max={debe} />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label className="text-xs">Transferencia</Label>
+                      <Input type="number" value={payTransferencia} onChange={(e) => { const v = Math.max(0, Number(e.target.value)); setPayTransferencia(v); setPayEfectivo(Math.max(0, debe - v)); }} min={0} max={debe} />
+                    </div>
+                    {payTransferencia > 0 && cuentasBancarias.length > 0 && (
+                      <div className="space-y-1.5">
+                        <Label className="text-xs">Cuenta bancaria</Label>
+                        <Select value={payCuentaBancariaId} onValueChange={setPayCuentaBancariaId}>
+                          <SelectTrigger className="h-9"><SelectValue placeholder="Seleccionar cuenta" /></SelectTrigger>
+                          <SelectContent>
+                            {cuentasBancarias.map((c) => <SelectItem key={c.id} value={c.id}>{c.nombre}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    )}
+                    <div className="text-xs text-right text-muted-foreground">
+                      Total a cobrar: <strong className="text-gray-900">{formatCurrency(payEfectivo + payTransferencia)}</strong>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <Label>Monto a cobrar</Label>
+                    <Input type="number" value={payMonto} onChange={(e) => setPayMonto(Math.max(0, Math.min(debe, Number(e.target.value))))} min={0} max={debe} />
+                    {payMetodo === "Transferencia" && cuentasBancarias.length > 0 && (
+                      <div className="space-y-1.5 mt-2">
+                        <Label className="text-xs">Cuenta bancaria</Label>
+                        <Select value={payCuentaBancariaId} onValueChange={setPayCuentaBancariaId}>
+                          <SelectTrigger className="h-9"><SelectValue placeholder="Seleccionar cuenta" /></SelectTrigger>
+                          <SelectContent>
+                            {cuentasBancarias.map((c) => <SelectItem key={c.id} value={c.id}>{c.nombre}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Pending balance warning */}
+                {saldoPendiente > 0 && payVenta.cliente_id && (
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                    El saldo pendiente de <strong>{formatCurrency(saldoPendiente)}</strong> se cargará a la cuenta corriente del cliente, vinculado al comprobante <strong>#{payVenta.numero}</strong>.
+                  </div>
+                )}
+                {saldoPendiente > 0 && !payVenta.cliente_id && (
+                  <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+                    Esta venta no tiene cliente asignado. No se puede dejar saldo pendiente en cuenta corriente.
+                  </div>
+                )}
+
+                <div className="flex justify-end gap-2 pt-1">
+                  <Button variant="outline" onClick={() => setPayDialogOpen(false)}>Cancelar</Button>
+                  <Button onClick={handleRegistrarPago} disabled={paySaving || totalPagando <= 0}>
+                    {paySaving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+                    Confirmar Cobro — {formatCurrency(Math.min(totalPagando, debe))}
+                  </Button>
+                </div>
+              </div>
+            );
+          })()}
         </DialogContent>
       </Dialog>
     </div>

@@ -13,6 +13,7 @@ import {
   ChevronLeft,
   Layers,
   Box,
+  Tag,
 } from "lucide-react";
 import { showToast } from "@/components/tienda/toast";
 
@@ -25,10 +26,13 @@ interface Producto {
   unidad_medida: string;
   stock: number;
   categoria_id: string;
+  subcategoria_id: string | null;
   marca_id: string | null;
   es_combo?: boolean;
   categorias: { nombre: string } | null;
   marcas: { nombre: string } | null;
+  updated_at?: string;
+  fecha_actualizacion?: string;
 }
 
 interface ComboComponente {
@@ -72,6 +76,7 @@ export default function ProductoDetallePage() {
   const [comboOpen, setComboOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [cartQtys, setCartQtys] = useState<Record<string, number>>({});
+  const [activeDiscounts, setActiveDiscounts] = useState<any[]>([]);
 
   // Sync cart quantities
   useEffect(() => {
@@ -86,6 +91,50 @@ export default function ProductoDetallePage() {
     window.addEventListener("cart-updated", syncCart);
     return () => window.removeEventListener("cart-updated", syncCart);
   }, []);
+
+  // Load active discounts
+  useEffect(() => {
+    async function loadDiscounts() {
+      const today = new Date().toISOString().split("T")[0];
+      const { data } = await supabase
+        .from("descuentos")
+        .select("*")
+        .eq("activo", true)
+        .lte("fecha_inicio", today);
+      setActiveDiscounts((data || []).filter((d: any) => !d.fecha_fin || d.fecha_fin >= today));
+    }
+    loadDiscounts();
+  }, []);
+
+  function getProductDiscount(prod: Producto, presLabel?: string | null): number {
+    let best = 0;
+    const effectivePres = presLabel ?? "Unidad";
+    const isBox = effectivePres !== "Unidad" && !effectivePres.startsWith("Unidad");
+    const isUnit = !isBox;
+    for (const d of activeDiscounts) {
+      if (d.presentacion === "unidad" && isBox) continue;
+      if (d.presentacion === "caja" && isUnit) continue;
+      if (d.aplica_a === "todos") {
+        best = Math.max(best, Number(d.porcentaje));
+      } else if (d.aplica_a === "categorias") {
+        const ids: string[] = d.categorias_ids || [];
+        if (ids.includes(prod.categoria_id) || (prod.subcategoria_id && ids.includes(prod.subcategoria_id))) {
+          best = Math.max(best, Number(d.porcentaje));
+        }
+      } else if (d.aplica_a === "subcategorias") {
+        const subIds: string[] = d.subcategorias_ids || [];
+        if (prod.subcategoria_id && subIds.includes(prod.subcategoria_id)) {
+          best = Math.max(best, Number(d.porcentaje));
+        }
+      } else if (d.aplica_a === "productos") {
+        const ids: string[] = d.productos_ids || [];
+        if (ids.includes(prod.id)) {
+          best = Math.max(best, Number(d.porcentaje));
+        }
+      }
+    }
+    return best;
+  }
 
   useEffect(() => {
     if (!id) return;
@@ -123,7 +172,10 @@ export default function ProductoDetallePage() {
           .order("cantidad");
         if (pres && pres.length > 0) {
           setPresentaciones(pres as Presentacion[]);
-          setSelectedPresIdx(0);
+          // Default to "Unidad" for Mt/Medio Cartón products
+          const hasMedio = pres.some((p: any) => p.cantidad <= 0.5 || (p.nombre && p.nombre.toLowerCase().includes("medio")));
+          const unitIdx = hasMedio ? pres.findIndex((p: any) => p.cantidad === 1) : -1;
+          setSelectedPresIdx(unitIdx >= 0 ? unitIdx : 0);
         } else {
           setPresentaciones([]);
           setSelectedPresIdx(0);
@@ -161,17 +213,43 @@ export default function ProductoDetallePage() {
   const currentPres = presentaciones[selectedPresIdx];
   const currentPrice = currentPres ? currentPres.precio : (producto?.precio ?? 0);
   const presQty = currentPres ? Number(currentPres.cantidad) : 1;
-  const currentLabel = currentPres
-    ? currentPres.cantidad === 1 ? "Unidad" : `Caja (${currentPres.cantidad} unidades)`
-    : "Unidad";
+
+  function presLabelFn(p: { cantidad: number; nombre?: string }): string {
+    if (p.cantidad === 1) return "Unidad";
+    if (p.cantidad <= 0.5 || (p.nombre && p.nombre.toLowerCase().includes("medio"))) return "Medio Cartón";
+    return `Caja (x${p.cantidad})`;
+  }
+  function presLabelLong(p: { cantidad: number; nombre?: string }): string {
+    if (p.cantidad === 1) return "Unidad";
+    if (p.cantidad <= 0.5 || (p.nombre && p.nombre.toLowerCase().includes("medio"))) return "Medio Cartón";
+    return `Caja (${p.cantidad} unidades)`;
+  }
+
+  const currentLabel = currentPres ? presLabelLong(currentPres) : "Unidad";
+
+  const currentPresLabel = currentPres ? presLabelFn(currentPres) : "Unidad";
+  const currentDiscount = producto ? getProductDiscount(producto, currentPresLabel) : 0;
+  const discountedPrice = currentDiscount > 0 ? Math.round(currentPrice * (1 - currentDiscount / 100)) : currentPrice;
+  const savings = currentPrice - discountedPrice;
+
+  // Check if there's a box-only discount (discount on box but not unit)
+  const boxOnlyDiscount = producto ? (() => {
+    const unitDisc = getProductDiscount(producto, "Unidad");
+    const boxPres = presentaciones.find((p) => p.cantidad > 1);
+    if (!boxPres) return 0;
+    const boxLabel = presLabelFn(boxPres);
+    const boxDisc = getProductDiscount(producto, boxLabel);
+    return boxDisc > 0 && unitDisc === 0 ? boxDisc : 0;
+  })() : 0;
 
   // Max qty based on stock and presentation, minus what's already in cart
-  const cartKey = producto ? `${producto.id}_${currentPres ? (currentPres.cantidad === 1 ? "Unidad" : `Caja (x${currentPres.cantidad})`) : "Unidad"}` : "";
+  const cartKey = producto ? `${producto.id}_${currentPresLabel}` : "";
   const inCart = cartQtys[cartKey] || 0;
   // Total units in cart for this product (all presentations)
   const totalUnitsInCart = producto ? Object.entries(cartQtys).reduce((sum, [key, qty]) => {
     if (key.startsWith(producto.id + "_")) {
       // Figure out units per item from the key
+      if (key.includes("Medio Cartón")) return sum + qty * 0.5;
       const match = key.match(/Caja \(x(\d+)\)/);
       const units = match ? Number(match[1]) : 1;
       return sum + qty * units;
@@ -198,11 +276,11 @@ export default function ProductoDetallePage() {
     maxQty <= 5 ? "text-orange-500" :
     "text-green-600";
 
-  function addToCart(prod: Producto, price: number, presLabel: string, qty: number) {
+  function addToCart(prod: Producto, price: number, presLabel: string, qty: number, precioOriginal?: number, descuento?: number) {
     const stored = localStorage.getItem("carrito");
-    const carrito: { id: string; nombre: string; precio: number; imagen_url: string | null; cantidad: number; presentacion?: string }[] = stored ? JSON.parse(stored) : [];
+    const carrito: any[] = stored ? JSON.parse(stored) : [];
     const cartKey = `${prod.id}_${presLabel}`;
-    const existing = carrito.find((item) => item.id === cartKey);
+    const existing = carrito.find((item: any) => item.id === cartKey);
     if (existing) {
       existing.cantidad += qty;
     } else {
@@ -210,6 +288,8 @@ export default function ProductoDetallePage() {
         id: cartKey,
         nombre: presLabel !== "Unidad" ? `${prod.nombre} - ${presLabel}` : prod.nombre,
         precio: price,
+        precio_original: precioOriginal,
+        descuento: descuento,
         imagen_url: prod.imagen_url,
         cantidad: qty,
         presentacion: presLabel,
@@ -222,7 +302,10 @@ export default function ProductoDetallePage() {
 
   function handleAddToCart() {
     if (!producto) return;
-    addToCart(producto, currentPrice, currentPres ? (currentPres.cantidad === 1 ? "Unidad" : `Caja (x${currentPres.cantidad})`) : "Unidad", cantidad);
+    const presLabel = currentPresLabel;
+    const disc = getProductDiscount(producto, presLabel);
+    const price = disc > 0 ? Math.round(currentPrice * (1 - disc / 100)) : currentPrice;
+    addToCart(producto, price, presLabel, cantidad, disc > 0 ? currentPrice : undefined, disc > 0 ? disc : undefined);
     setCantidad(1);
   }
 
@@ -240,7 +323,7 @@ export default function ProductoDetallePage() {
     if (pres && pres.length > 1) {
       const idx = relSelectedPres[prod.id] ?? 0;
       const p = pres[idx];
-      return p.cantidad === 1 ? "Unidad" : `Caja (x${p.cantidad})`;
+      return presLabelFn(p);
     }
     return "Unidad";
   }
@@ -290,7 +373,7 @@ export default function ProductoDetallePage() {
       {/* Main */}
       <div className="grid gap-10 md:grid-cols-2">
         {/* Left - Image */}
-        <div className="sticky top-24 self-start">
+        <div className="md:sticky md:top-24 md:self-start md:max-h-[calc(100vh-8rem)]">
           <div className="relative aspect-square overflow-hidden rounded-2xl border border-gray-100 bg-gray-50">
             {producto.imagen_url ? (
               <Image
@@ -301,8 +384,11 @@ export default function ProductoDetallePage() {
                 className="object-contain p-8"
               />
             ) : (
-              <div className="flex h-full w-full flex-col items-center justify-center gap-3">
-                <Package className="h-24 w-24 text-gray-200" />
+              <div className="flex h-full w-full flex-col items-center justify-center gap-3 bg-gradient-to-br from-gray-50 to-gray-100">
+                <div className="w-28 h-28 rounded-3xl bg-white/80 flex items-center justify-center shadow-sm">
+                  <Package className="h-14 w-14 text-gray-300" />
+                </div>
+                <span className="text-sm text-gray-300 font-medium">Sin imagen</span>
               </div>
             )}
             {producto.stock > 0 && producto.stock <= 10 && (
@@ -321,13 +407,43 @@ export default function ProductoDetallePage() {
 
           {/* Price */}
           <div className="mt-4 border-b border-gray-100 pb-5">
-            <p className="text-3xl font-bold text-gray-900">
-              {formatCurrency(currentPrice)}
-            </p>
-            {currentPres && currentPres.cantidad > 1 && (
+            {currentDiscount > 0 ? (
+              <>
+                <div className="flex items-center gap-3">
+                  <p className="text-3xl font-bold text-gray-900">
+                    {formatCurrency(discountedPrice)}
+                  </p>
+                  <span className="inline-flex items-center gap-1 bg-gradient-to-r from-red-500 to-pink-500 text-white text-xs font-bold px-3 py-1.5 rounded-lg shadow-lg shadow-red-500/30">
+                    <Tag className="w-3 h-3" />
+                    -{currentDiscount}% OFF
+                  </span>
+                </div>
+                <p className="text-base text-gray-400 line-through mt-1">
+                  {formatCurrency(currentPrice)}
+                </p>
+                <p className="text-sm text-green-600 font-semibold mt-0.5">
+                  Ahorrás {formatCurrency(savings)}
+                </p>
+              </>
+            ) : (
+              <p className="text-3xl font-bold text-gray-900">
+                {formatCurrency(currentPrice)}
+              </p>
+            )}
+            {currentPres && currentPres.cantidad > 1 ? (
               <p className="text-sm text-gray-500 mt-1">
                 por caja ({currentPres.cantidad} unidades)
               </p>
+            ) : (
+              <p className="text-sm text-gray-500 mt-1">Precio Unitario</p>
+            )}
+            {boxOnlyDiscount > 0 && currentPresLabel === "Unidad" && (
+              <div className="mt-2 inline-flex items-center gap-2 bg-green-50 border border-green-200 rounded-lg px-3 py-1.5">
+                <Box className="w-3.5 h-3.5 text-green-600 flex-shrink-0" />
+                <span className="text-sm text-green-700">
+                  Comprando por caja ahorrás <span className="font-semibold">{boxOnlyDiscount}%</span>
+                </span>
+              </div>
             )}
             {producto.es_combo && comboComponentes.length > 0 && (() => {
               const totalUnidades = comboComponentes.reduce((acc, c) => acc + c.cantidad, 0);
@@ -349,7 +465,15 @@ export default function ProductoDetallePage() {
             <div className="mt-5">
               <p className="text-sm font-semibold text-gray-900 mb-3">Presentación</p>
               <div className="grid grid-cols-2 gap-3">
-                {presentaciones.map((p, idx) => {
+                {presentaciones
+                  .map((p, idx) => ({ p, idx }))
+                  .sort((a, b) => {
+                    // Unit (1) first, then Medio Cartón (<1), then boxes
+                    if (a.p.cantidad === 1 && b.p.cantidad !== 1) return -1;
+                    if (a.p.cantidad !== 1 && b.p.cantidad === 1) return 1;
+                    return a.p.cantidad - b.p.cantidad;
+                  })
+                  .map(({ p, idx }) => {
                   const isUnit = Number(p.cantidad) === 1;
                   const selected = selectedPresIdx === idx;
                   const presMax = Math.floor(availableStock / Number(p.cantidad));
@@ -399,6 +523,35 @@ export default function ProductoDetallePage() {
                 <span className="text-gray-500">Estado:</span>
                 <span className={`font-medium ${stockColor}`}>{stockLabel}</span>
               </div>
+              {(producto.updated_at || producto.fecha_actualizacion) && (() => {
+                const dateStr = producto.fecha_actualizacion || producto.updated_at || "";
+                const date = new Date(dateStr);
+                if (isNaN(date.getTime())) return null;
+                const precioAnterior = (producto as any).precio_anterior;
+                const precioActual = producto.precio;
+                const hasPriceChange = precioAnterior != null && precioAnterior > 0 && precioAnterior !== precioActual;
+                const isUp = hasPriceChange && precioActual > precioAnterior;
+                const isDown = hasPriceChange && precioActual < precioAnterior;
+                return (<>
+                  <div className="flex justify-between items-center pt-1 border-t border-gray-100 mt-1">
+                    <span className="text-gray-500">Últ. actualización:</span>
+                    <span className="font-medium text-gray-700 text-xs">
+                      {date.toLocaleDateString("es-AR", { day: "numeric", month: "short", year: "numeric" })}
+                    </span>
+                  </div>
+                  {hasPriceChange && (
+                    <div className="flex justify-between items-center">
+                      <span className="text-gray-500">Precio anterior:</span>
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-xs text-gray-400 line-through">{formatCurrency(precioAnterior)}</span>
+                        <span className={`text-xs font-semibold px-1.5 py-0.5 rounded ${isUp ? "bg-red-50 text-red-600" : "bg-green-50 text-green-600"}`}>
+                          {isUp ? "↑ Aumentó" : "↓ Bajó"} {Math.abs(Math.round(((precioActual - precioAnterior) / precioAnterior) * 100))}%
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                </>);
+              })()}
             </div>
           </div>
 
@@ -572,9 +725,13 @@ export default function ProductoDetallePage() {
                       {/* Presentacion pills */}
                       {pres && pres.length > 1 && (
                         <div className="flex gap-1.5 mt-2">
-                          {pres.map((pr, idx) => {
+                          {pres.map((pr, idx) => ({ pr, idx })).sort((a, b) => {
+                            if (a.pr.cantidad === 1 && b.pr.cantidad !== 1) return -1;
+                            if (a.pr.cantidad !== 1 && b.pr.cantidad === 1) return 1;
+                            return a.pr.cantidad - b.pr.cantidad;
+                          }).map(({ pr, idx }) => {
                             const isActive = presIdx === idx;
-                            const label = pr.cantidad === 1 ? "Unidad" : `Caja (x${pr.cantidad})`;
+                            const label = presLabelFn(pr);
                             return (
                               <button
                                 key={idx}

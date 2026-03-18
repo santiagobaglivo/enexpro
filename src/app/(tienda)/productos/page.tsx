@@ -16,7 +16,6 @@ import {
   ChevronDown,
   ShoppingCart,
   X,
-  Heart,
   Minus,
   Plus,
 } from "lucide-react";
@@ -118,6 +117,7 @@ function ProductosContent() {
   const [categoriasCollapsed, setCategoriasCollapsed] = useState(false);
   const [marcasCollapsed, setMarcasCollapsed] = useState(false);
   const [presentacionesMap, setPresentacionesMap] = useState<Record<string, { nombre: string; cantidad: number; precio: number }[]>>({});
+  const [activeDiscounts, setActiveDiscounts] = useState<any[]>([]);
   const [selectedPres, setSelectedPres] = useState<Record<string, number>>({}); // productId -> presentacion index
   const [cartUnits, setCartUnits] = useState<Record<string, number>>({}); // productId -> total units in cart
 
@@ -239,6 +239,52 @@ function ProductosContent() {
     loadSubs();
   }, [categoriaId]);
 
+  // Load active discounts
+  useEffect(() => {
+    async function loadDiscounts() {
+      const today = new Date().toISOString().split("T")[0];
+      const { data } = await supabase
+        .from("descuentos")
+        .select("*")
+        .eq("activo", true)
+        .lte("fecha_inicio", today);
+      setActiveDiscounts((data || []).filter((d: any) => !d.fecha_fin || d.fecha_fin >= today));
+    }
+    loadDiscounts();
+  }, []);
+
+  function getProductDiscount(producto: Producto, presLabel?: string | null): number {
+    let best = 0;
+    // If no presLabel provided, treat as "Unidad" (default presentation)
+    const effectivePres = presLabel ?? "Unidad";
+    const isBox = effectivePres !== "Unidad" && !effectivePres.startsWith("Unidad");
+    const isUnit = !isBox;
+    for (const d of activeDiscounts) {
+      // Check presentation filter
+      if (d.presentacion === "unidad" && isBox) continue;
+      if (d.presentacion === "caja" && isUnit) continue;
+      if (d.aplica_a === "todos") {
+        best = Math.max(best, Number(d.porcentaje));
+      } else if (d.aplica_a === "categorias") {
+        const ids: string[] = d.categorias_ids || [];
+        if (ids.includes(producto.categoria_id) || (producto.subcategoria_id && ids.includes(producto.subcategoria_id))) {
+          best = Math.max(best, Number(d.porcentaje));
+        }
+      } else if (d.aplica_a === "subcategorias") {
+        const subIds: string[] = d.subcategorias_ids || [];
+        if (producto.subcategoria_id && subIds.includes(producto.subcategoria_id)) {
+          best = Math.max(best, Number(d.porcentaje));
+        }
+      } else if (d.aplica_a === "productos") {
+        const ids: string[] = d.productos_ids || [];
+        if (ids.includes(producto.id)) {
+          best = Math.max(best, Number(d.porcentaje));
+        }
+      }
+    }
+    return best;
+  }
+
   // Auto-expand selected category
   useEffect(() => {
     if (categoriaId) {
@@ -341,6 +387,18 @@ function ProductosContent() {
         map[pr.producto_id].push({ nombre: pr.nombre, cantidad: pr.cantidad, precio: pr.precio });
       });
       setPresentacionesMap(map);
+      // Default Mt/Medio Cartón products to "Unidad" presentation
+      const defaults: Record<string, number> = {};
+      for (const [prodId, pres] of Object.entries(map)) {
+        const hasMedio = pres.some((p) => p.cantidad <= 0.5 || p.nombre.toLowerCase().includes("medio"));
+        if (hasMedio) {
+          const unitIdx = pres.findIndex((p) => p.cantidad === 1);
+          if (unitIdx >= 0) defaults[prodId] = unitIdx;
+        }
+      }
+      if (Object.keys(defaults).length > 0) {
+        setSelectedPres((prev) => ({ ...defaults, ...prev }));
+      }
     }
     loadPresentaciones();
   }, [productos]);
@@ -369,26 +427,31 @@ function ProductosContent() {
     return producto.precio;
   }
 
+  function presLabel(p: { cantidad: number; nombre?: string }): string {
+    if (p.cantidad === 1) return "Unidad";
+    if (p.cantidad <= 0.5 || (p.nombre && p.nombre.toLowerCase().includes("medio"))) return "Medio Cartón";
+    return `Caja (x${p.cantidad})`;
+  }
+
   function getActivePresLabel(producto: Producto) {
     const pres = presentacionesMap[producto.id];
     if (pres && pres.length > 1) {
       const idx = selectedPres[producto.id] ?? 0;
-      const p = pres[idx];
-      return p.cantidad === 1 ? "Unidad" : `Caja (x${p.cantidad})`;
+      return presLabel(pres[idx]);
     }
     return null;
   }
 
   function addToCart(producto: Producto, qty?: number) {
     const amount = qty ?? getQty(producto.id);
-    const price = getActivePrice(producto);
+    const basePrice = getActivePrice(producto);
     const presLabel = getActivePresLabel(producto);
+    const disc = getProductDiscount(producto, presLabel);
+    const price = disc > 0 ? Math.round(basePrice * (1 - disc / 100)) : basePrice;
     const cartKey = presLabel ? `${producto.id}_${presLabel}` : producto.id;
     const stored = localStorage.getItem("carrito");
-    const carrito: { id: string; nombre: string; precio: number; imagen_url: string | null; cantidad: number; presentacion?: string }[] = stored
-      ? JSON.parse(stored)
-      : [];
-    const existing = carrito.find((item) => item.id === cartKey);
+    const carrito: any[] = stored ? JSON.parse(stored) : [];
+    const existing = carrito.find((item: any) => item.id === cartKey);
     if (existing) {
       existing.cantidad += amount;
     } else {
@@ -396,6 +459,8 @@ function ProductosContent() {
         id: cartKey,
         nombre: presLabel ? `${producto.nombre} - ${presLabel}` : producto.nombre,
         precio: price,
+        precio_original: disc > 0 ? basePrice : undefined,
+        descuento: disc > 0 ? disc : undefined,
         imagen_url: producto.imagen_url,
         cantidad: amount,
         presentacion: presLabel || undefined,
@@ -984,71 +1049,111 @@ function ProductosContent() {
             </div>
           ) : view === "grid" ? (
             /* ─── Grid view ─── */
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-5">
               {productos.map((producto) => {
                 const qty = getQty(producto.id);
                 const pres = presentacionesMap[producto.id];
                 const activePrice = pres && pres.length > 1 ? (pres[selectedPres[producto.id] ?? 0]?.precio ?? producto.precio) : producto.precio;
                 const availableStock = Math.max(0, producto.stock - (cartUnits[producto.id] || 0));
+                const currentPresLabel = pres && pres.length > 1 ? presLabel(pres[selectedPres[producto.id] ?? 0]) : null;
+                const disc = getProductDiscount(producto, currentPresLabel);
+                const discountedPrice = disc > 0 ? Math.round(activePrice * (1 - disc / 100)) : activePrice;
                 return (
                   <div
                     key={producto.id}
-                    className="group rounded-2xl border border-gray-100 bg-white overflow-hidden hover:shadow-lg hover:border-gray-200 transition-all duration-300 flex flex-col"
+                    className="group relative bg-white rounded-2xl overflow-hidden transition-all duration-300 hover:shadow-[0_8px_30px_rgba(0,0,0,0.08)] border border-gray-100/80 flex flex-col"
                   >
                     {/* Image */}
-                    <Link href={`/productos/${producto.id}`} className="relative">
-                      <div className="aspect-square bg-gray-50 overflow-hidden">
+                    <Link href={`/productos/${producto.id}`} className="relative block">
+                      <div className="aspect-[4/3] bg-gradient-to-b from-gray-50 to-white overflow-hidden">
                         {producto.imagen_url ? (
                           <img
                             src={producto.imagen_url}
                             alt={producto.nombre}
-                            className="w-full h-full object-contain p-6 group-hover:scale-105 transition-transform duration-300"
+                            className="w-full h-full object-contain p-5 group-hover:scale-105 transition-transform duration-500 ease-out"
                           />
                         ) : (
-                          <div className="w-full h-full flex items-center justify-center">
-                            <Package className="h-14 w-14 text-gray-200" />
+                          <div className="w-full h-full flex flex-col items-center justify-center gap-2 bg-gradient-to-br from-gray-50 to-gray-100">
+                            <div className="w-16 h-16 rounded-2xl bg-white/80 flex items-center justify-center shadow-sm">
+                              <Package className="h-8 w-8 text-gray-300" />
+                            </div>
+                            <span className="text-[10px] text-gray-300 font-medium">Sin imagen</span>
                           </div>
                         )}
                       </div>
-                      <button
-                        onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                        className="absolute top-3 right-3 w-8 h-8 rounded-full bg-white/80 backdrop-blur-sm flex items-center justify-center shadow-sm hover:bg-white transition-colors"
-                      >
-                        <Heart className="w-4 h-4 text-gray-400 hover:text-pink-500 transition-colors" />
-                      </button>
+                      {/* Badges */}
+                      <div className="absolute top-2.5 left-2.5 flex flex-col gap-1.5">
+                        {disc > 0 && (
+                          <span className="bg-gradient-to-r from-red-500 to-pink-500 text-white text-[11px] font-bold px-2.5 py-1 rounded-lg shadow-lg shadow-red-500/30">
+                            -{disc}% OFF
+                          </span>
+                        )}
+                        {disc === 0 && (() => {
+                          const boxPres = pres?.find((p) => p.cantidad > 1);
+                          if (!boxPres) return null;
+                          const boxLabel = presLabel(boxPres);
+                          const boxDisc = getProductDiscount(producto, boxLabel);
+                          if (boxDisc <= 0) return null;
+                          return (
+                            <span className="bg-gradient-to-r from-emerald-500 to-green-500 text-white text-[10px] font-bold px-2 py-1 rounded-lg shadow-lg shadow-green-500/30">
+                              -{boxDisc}% comprando por caja
+                            </span>
+                          );
+                        })()}
+                      </div>
+                      {producto.stock <= 0 && (
+                        <div className="absolute inset-0 bg-white/40 backdrop-blur-[1px] flex items-center justify-center">
+                          <span className="bg-white/90 text-gray-500 text-xs font-medium px-3 py-1.5 rounded-lg shadow-sm">Agotado</span>
+                        </div>
+                      )}
                     </Link>
 
-                    {/* Info */}
-                    <Link href={`/productos/${producto.id}`} className="px-4 pt-3 pb-1">
-                      <div className="flex items-center gap-2 text-[11px] text-gray-400 mb-1">
-                        {producto.categorias?.nombre && (
-                          <span>{producto.categorias.nombre}</span>
+                    {/* Content */}
+                    <div className="flex flex-col flex-1 p-3.5 pt-2.5">
+                      <Link href={`/productos/${producto.id}`} className="flex-1">
+                        {(producto.categorias?.nombre || producto.marcas?.nombre) && (
+                          <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
+                            {producto.categorias?.nombre && (
+                              <span className="text-[10px] text-gray-400 font-medium truncate">
+                                {producto.categorias.nombre}
+                              </span>
+                            )}
+                            {producto.marcas?.nombre && (
+                              <span className="text-[10px] bg-gray-100 text-gray-500 font-medium px-1.5 py-0.5 rounded">
+                                {producto.marcas.nombre}
+                              </span>
+                            )}
+                          </div>
                         )}
-                        {producto.categorias?.nombre && producto.marcas?.nombre && (
-                          <span className="text-gray-300">|</span>
-                        )}
-                        {producto.marcas?.nombre && (
-                          <span>{producto.marcas.nombre}</span>
+                        <h3 className="text-[13px] font-medium text-gray-800 line-clamp-2 leading-snug mb-2.5 group-hover:text-pink-700 transition-colors">
+                          {producto.nombre}
+                        </h3>
+                      </Link>
+
+                      {/* Price */}
+                      <div className="mb-3">
+                        {disc > 0 ? (
+                          <div className="flex items-baseline gap-2">
+                            <span className="text-lg font-bold text-gray-900">{formatPrice(discountedPrice)}</span>
+                            <span className="text-xs text-gray-400 line-through">{formatPrice(activePrice)}</span>
+                          </div>
+                        ) : (
+                          <span className="text-lg font-bold text-gray-900">{formatPrice(activePrice)}</span>
                         )}
                       </div>
-                      <h3 className="text-sm font-medium text-gray-800 line-clamp-2 min-h-[2.5rem] leading-tight">
-                        {producto.nombre}
-                      </h3>
-                    </Link>
-
-                    <div className="px-4 pb-4 flex-1 flex flex-col justify-end">
-                      <p className="text-lg font-bold text-gray-900 mb-2">
-                        {formatPrice(activePrice)}
-                      </p>
 
                       {/* Presentacion pills */}
                       {pres && pres.length > 1 && (() => {
                         const activeIdx = selectedPres[producto.id] ?? 0;
                         return (
-                        <div className="flex gap-1.5 mb-3">
-                          {pres.map((pr, idx) => {
+                        <div className="flex flex-wrap gap-1.5 mb-3">
+                          {pres.map((pr, idx) => ({ pr, idx })).sort((a, b) => {
+                            if (a.pr.cantidad === 1 && b.pr.cantidad !== 1) return -1;
+                            if (a.pr.cantidad !== 1 && b.pr.cantidad === 1) return 1;
+                            return a.pr.cantidad - b.pr.cantidad;
+                          }).map(({ pr, idx }) => {
                             const isActive = activeIdx === idx;
-                            const label = pr.cantidad === 1 ? "Unidad" : `Caja (x${pr.cantidad})`;
+                            const label = pr.cantidad === 1 ? "Unidad" : (pr.cantidad <= 0.5 || (pr.nombre && pr.nombre.toLowerCase().includes("medio"))) ? "Medio Cartón" : `x${pr.cantidad}`;
                             const presDisabled = Math.floor(availableStock / Number(pr.cantidad)) <= 0;
                             return (
                               <button
@@ -1059,12 +1164,12 @@ function ProductosContent() {
                                   const newMax = Math.floor(availableStock / Number(pr.cantidad));
                                   if (qty > newMax) setQuantities((prev) => ({ ...prev, [producto.id]: Math.max(1, newMax) }));
                                 }}
-                                className={`px-3 py-1.5 rounded-full text-xs font-medium transition-all border ${
+                                className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-all border ${
                                   presDisabled
                                     ? "bg-gray-50 text-gray-300 border-gray-100 cursor-not-allowed"
                                     : isActive
-                                    ? "bg-pink-600 text-white border-pink-600"
-                                    : "bg-white text-gray-600 border-gray-200 hover:border-pink-300"
+                                    ? "bg-gray-900 text-white border-gray-900 shadow-sm"
+                                    : "bg-white text-gray-600 border-gray-200 hover:border-gray-400"
                                 }`}
                               >
                                 {label}
@@ -1075,44 +1180,41 @@ function ProductosContent() {
                         );
                       })()}
 
-                      {/* Quantity + Add to cart */}
+                      {/* Add to cart */}
                       {(() => {
                         const activePres = pres && pres.length > 1 ? pres[selectedPres[producto.id] ?? 0] : null;
                         const presUnits = activePres ? Number(activePres.cantidad) : 1;
                         const maxForPres = Math.floor(availableStock / presUnits);
                         const canBuy = maxForPres > 0;
                         return canBuy ? (
-                        <div className="flex items-center gap-2">
-                          <div className="flex items-center border border-gray-200 rounded-xl overflow-hidden">
+                        <div className="flex items-center gap-1.5">
+                          <div className="flex items-center bg-gray-100 rounded-lg overflow-hidden shrink-0">
                             <button
                               onClick={() => setQty(producto.id, qty - 1)}
-                              className="w-9 h-9 flex items-center justify-center text-gray-500 hover:bg-gray-50 transition-colors"
+                              className="w-8 h-8 flex items-center justify-center text-gray-500 hover:text-gray-800 hover:bg-gray-200 transition-colors"
                             >
-                              <Minus className="w-3.5 h-3.5" />
+                              <Minus className="w-3 h-3" />
                             </button>
-                            <span className="w-8 text-center text-sm font-medium tabular-nums">{qty}</span>
+                            <span className="w-7 text-center text-xs font-semibold tabular-nums text-gray-800">{qty}</span>
                             <button
                               onClick={() => setQty(producto.id, Math.min(qty + 1, maxForPres))}
                               disabled={qty >= maxForPres}
-                              className="w-9 h-9 flex items-center justify-center text-gray-500 hover:bg-gray-50 transition-colors disabled:opacity-30"
+                              className="w-8 h-8 flex items-center justify-center text-gray-500 hover:text-gray-800 hover:bg-gray-200 transition-colors disabled:opacity-30"
                             >
-                              <Plus className="w-3.5 h-3.5" />
+                              <Plus className="w-3 h-3" />
                             </button>
                           </div>
                           <button
                             onClick={() => addToCart(producto, qty)}
-                            className="flex-1 bg-pink-600 hover:bg-pink-700 text-white text-sm py-2.5 rounded-xl font-semibold transition-colors"
+                            className="flex-1 bg-pink-600 hover:bg-pink-700 active:scale-[0.98] text-white text-xs sm:text-sm py-2 rounded-lg font-semibold transition-all shadow-sm shadow-pink-600/20"
                           >
-                            Agregar {formatPrice(activePrice * qty)}
+                            Agregar {formatPrice(discountedPrice * qty)}
                           </button>
                         </div>
                       ) : (
-                        <button
-                          disabled
-                          className="w-full bg-gray-100 text-gray-400 text-sm py-2.5 rounded-xl font-medium cursor-not-allowed"
-                        >
-                          Sin stock
-                        </button>
+                        <div className="flex items-center justify-center gap-1.5 w-full bg-gray-50/80 text-gray-400 text-xs py-2.5 rounded-lg font-medium">
+                          Agotado
+                        </div>
                       );
                       })()}
                     </div>
@@ -1128,47 +1230,82 @@ function ProductosContent() {
                 const pres = presentacionesMap[producto.id];
                 const activePrice = pres && pres.length > 1 ? (pres[selectedPres[producto.id] ?? 0]?.precio ?? producto.precio) : producto.precio;
                 const availableStock = Math.max(0, producto.stock - (cartUnits[producto.id] || 0));
+                const listPresLabel = pres && pres.length > 1 ? presLabel(pres[selectedPres[producto.id] ?? 0]) : null;
                 return (
                   <div
                     key={producto.id}
-                    className="group rounded-2xl border border-gray-100 bg-white overflow-hidden hover:shadow-lg hover:border-gray-200 transition-all duration-300 flex gap-4"
+                    className="group bg-white rounded-2xl border border-gray-100/80 overflow-hidden hover:shadow-[0_8px_30px_rgba(0,0,0,0.08)] transition-all duration-300 flex gap-0"
                   >
                     <Link
                       href={`/productos/${producto.id}`}
-                      className="shrink-0 w-32 h-32 bg-gray-50 overflow-hidden rounded-xl relative"
+                      className="relative shrink-0 w-36 h-36 bg-gradient-to-b from-gray-50 to-white overflow-hidden"
                     >
                       {producto.imagen_url ? (
                         <img
                           src={producto.imagen_url}
                           alt={producto.nombre}
-                          className="w-full h-full object-contain p-3 group-hover:scale-105 transition-transform duration-300"
+                          className="w-full h-full object-contain p-4 group-hover:scale-105 transition-transform duration-500 ease-out"
                         />
                       ) : (
-                        <div className="w-full h-full flex items-center justify-center">
-                          <Package className="h-10 w-10 text-gray-200" />
+                        <div className="w-full h-full flex flex-col items-center justify-center gap-1 bg-gradient-to-br from-gray-50 to-gray-100">
+                          <div className="w-12 h-12 rounded-xl bg-white/80 flex items-center justify-center shadow-sm">
+                            <Package className="h-6 w-6 text-gray-300" />
+                          </div>
                         </div>
                       )}
+                      {(() => {
+                        const d = getProductDiscount(producto, listPresLabel);
+                        if (d > 0) return <span className="absolute top-2 left-2 bg-gradient-to-r from-red-500 to-pink-500 text-white text-[10px] font-bold px-2 py-1 rounded-lg shadow-lg shadow-red-500/30">-{d}% OFF</span>;
+                        const boxPres = pres?.find((p) => p.cantidad > 1);
+                        if (!boxPres) return null;
+                        const boxLabel = presLabel(boxPres);
+                        const boxDisc = getProductDiscount(producto, boxLabel);
+                        if (boxDisc <= 0) return null;
+                        return <span className="absolute top-2 left-2 bg-gradient-to-r from-emerald-500 to-green-500 text-white text-[10px] font-bold px-2 py-1 rounded-lg shadow-lg shadow-green-500/30">-{boxDisc}% en caja</span>;
+                      })()}
                     </Link>
-                    <div className="flex-1 py-4 pr-4 flex items-center justify-between gap-4 min-w-0">
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2 text-[11px] text-gray-400 mb-1">
-                          {producto.categorias?.nombre && <span>{producto.categorias.nombre}</span>}
-                          {producto.categorias?.nombre && producto.marcas?.nombre && <span className="text-gray-300">|</span>}
-                          {producto.marcas?.nombre && <span>{producto.marcas.nombre}</span>}
-                        </div>
+                    <div className="flex-1 py-3.5 pr-4 pl-1 flex items-center justify-between gap-4 min-w-0">
+                      <div className="min-w-0 flex-1">
+                        {(producto.categorias?.nombre || producto.marcas?.nombre) && (
+                          <div className="flex items-center gap-1.5 mb-0.5 flex-wrap">
+                            {producto.categorias?.nombre && (
+                              <span className="text-[10px] text-gray-400 font-medium truncate">
+                                {producto.categorias.nombre}
+                              </span>
+                            )}
+                            {producto.marcas?.nombre && (
+                              <span className="text-[10px] bg-gray-100 text-gray-500 font-medium px-1.5 py-0.5 rounded">
+                                {producto.marcas.nombre}
+                              </span>
+                            )}
+                          </div>
+                        )}
                         <Link href={`/productos/${producto.id}`}>
-                          <h3 className="font-medium text-gray-800 line-clamp-2 text-sm leading-tight">
+                          <h3 className="font-medium text-gray-800 line-clamp-2 text-sm leading-snug group-hover:text-pink-700 transition-colors">
                             {producto.nombre}
                           </h3>
                         </Link>
-                        <p className="text-lg font-bold text-gray-900 mt-1">
-                          {formatPrice(activePrice)}
-                        </p>
+                        {(() => {
+                          const d = getProductDiscount(producto, listPresLabel);
+                          const dp = d > 0 ? Math.round(activePrice * (1 - d / 100)) : activePrice;
+                          return d > 0 ? (
+                            <div className="flex items-baseline gap-2 mt-1.5">
+                              <span className="text-lg font-bold text-gray-900">{formatPrice(dp)}</span>
+                              <span className="text-xs text-gray-400 line-through">{formatPrice(activePrice)}</span>
+                            </div>
+                          ) : (
+                            <p className="text-lg font-bold text-gray-900 mt-1.5">{formatPrice(activePrice)}</p>
+                          );
+                        })()}
                         {pres && pres.length > 1 && (
-                          <div className="flex gap-1.5 mt-1.5">
-                            {pres.map((pr, idx) => {
+                          <div className="flex gap-1.5 mt-2">
+                            {pres.map((pr, idx) => ({ pr, idx })).sort((a, b) => {
+                              if (a.pr.cantidad === 1 && b.pr.cantidad !== 1) return -1;
+                              if (a.pr.cantidad !== 1 && b.pr.cantidad === 1) return 1;
+                              return a.pr.cantidad - b.pr.cantidad;
+                            }).map(({ pr, idx }) => {
                               const isActive = (selectedPres[producto.id] ?? 0) === idx;
-                              const label = pr.cantidad === 1 ? "Unidad" : `Caja (x${pr.cantidad})`;
+                              const label = pr.cantidad === 1 ? "Unidad" : (pr.cantidad <= 0.5 || (pr.nombre && pr.nombre.toLowerCase().includes("medio"))) ? "Medio Cartón" : `x${pr.cantidad}`;
                               const presDisabled = Math.floor(availableStock / Number(pr.cantidad)) <= 0;
                               return (
                                 <button
@@ -1179,9 +1316,9 @@ function ProductosContent() {
                                     const newMax = Math.floor(availableStock / Number(pr.cantidad));
                                     if (qty > newMax) setQuantities((prev) => ({ ...prev, [producto.id]: Math.max(1, newMax) }));
                                   }}
-                                  className={`px-2.5 py-1 rounded-full text-[11px] font-medium transition-all border ${
+                                  className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-all border ${
                                     presDisabled ? "bg-gray-50 text-gray-300 border-gray-100 cursor-not-allowed" :
-                                    isActive ? "bg-pink-600 text-white border-pink-600" : "bg-white text-gray-600 border-gray-200 hover:border-pink-300"
+                                    isActive ? "bg-gray-900 text-white border-gray-900 shadow-sm" : "bg-white text-gray-600 border-gray-200 hover:border-gray-400"
                                   }`}
                                 >
                                   {label}
@@ -1198,26 +1335,26 @@ function ProductosContent() {
                         const canBuy = maxForPres > 0;
                         return canBuy ? (
                         <div className="shrink-0 flex items-center gap-2">
-                          <div className="flex items-center border border-gray-200 rounded-xl overflow-hidden">
-                            <button onClick={() => setQty(producto.id, qty - 1)} className="w-8 h-8 flex items-center justify-center text-gray-500 hover:bg-gray-50">
+                          <div className="flex items-center bg-gray-100 rounded-lg overflow-hidden">
+                            <button onClick={() => setQty(producto.id, qty - 1)} className="w-8 h-8 flex items-center justify-center text-gray-500 hover:text-gray-800 hover:bg-gray-200 transition-colors">
                               <Minus className="w-3 h-3" />
                             </button>
-                            <span className="w-6 text-center text-sm font-medium tabular-nums">{qty}</span>
-                            <button onClick={() => setQty(producto.id, Math.min(qty + 1, maxForPres))} disabled={qty >= maxForPres} className="w-8 h-8 flex items-center justify-center text-gray-500 hover:bg-gray-50 disabled:opacity-30">
+                            <span className="w-6 text-center text-xs font-semibold tabular-nums text-gray-800">{qty}</span>
+                            <button onClick={() => setQty(producto.id, Math.min(qty + 1, maxForPres))} disabled={qty >= maxForPres} className="w-8 h-8 flex items-center justify-center text-gray-500 hover:text-gray-800 hover:bg-gray-200 transition-colors disabled:opacity-30">
                               <Plus className="w-3 h-3" />
                             </button>
                           </div>
                           <button
                             onClick={() => addToCart(producto, qty)}
-                            className="bg-pink-600 hover:bg-pink-700 text-white text-sm py-2.5 px-4 rounded-xl font-semibold transition-colors"
+                            className="bg-pink-600 hover:bg-pink-700 active:scale-[0.98] text-white text-sm py-2.5 px-5 rounded-lg font-semibold transition-all shadow-sm shadow-pink-600/20"
                           >
-                            Agregar {formatPrice(activePrice * qty)}
+                            Agregar {formatPrice((() => { const d2 = getProductDiscount(producto, listPresLabel); return d2 > 0 ? Math.round(activePrice * (1 - d2 / 100)) : activePrice; })() * qty)}
                           </button>
                         </div>
                       ) : (
-                        <button disabled className="shrink-0 bg-gray-100 text-gray-400 text-sm py-2.5 px-5 rounded-xl font-medium cursor-not-allowed">
-                          Sin stock
-                        </button>
+                        <div className="shrink-0 flex items-center gap-1.5 bg-gray-50/80 text-gray-400 text-xs py-2.5 px-5 rounded-lg font-medium">
+                          Agotado
+                        </div>
                       );
                       })()}
                     </div>

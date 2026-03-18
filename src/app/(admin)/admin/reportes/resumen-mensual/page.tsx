@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { supabase } from "@/lib/supabase";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -34,6 +34,8 @@ export default function ResumenMensualPage() {
   const [topProductos, setTopProductos] = useState<{ nombre: string; cantidad: number; total: number }[]>([]);
   const [ventasPorPago, setVentasPorPago] = useState<{ metodo: string; total: number; qty: number }[]>([]);
   const [egresosPorPago, setEgresosPorPago] = useState<{ metodo: string; total: number }[]>([]);
+  const [egresosDetalle, setEgresosDetalle] = useState<{ descripcion: string; metodo: string; monto: number }[]>([]);
+  const [transferPorCuenta, setTransferPorCuenta] = useState<{ cuenta: string; total: number }[]>([]);
   const [totalNC, setTotalNC] = useState(0);
 
   const fetchResumen = useCallback(async () => {
@@ -118,22 +120,38 @@ export default function ResumenMensualPage() {
 
     // Egresos (caja_movimientos tipo egreso)
     const { data: egresos } = await supabase.from("caja_movimientos")
-      .select("metodo_pago, monto")
+      .select("metodo_pago, monto, descripcion")
       .eq("tipo", "egreso")
       .gte("fecha", start).lt("fecha", end);
     const egresoMap: Record<string, number> = {};
+    const egresoDetailList: { descripcion: string; metodo: string; monto: number }[] = [];
     (egresos || []).forEach((e: any) => {
       const m = e.metodo_pago || "Otros";
       egresoMap[m] = (egresoMap[m] || 0) + Math.abs(e.monto);
+      egresoDetailList.push({ descripcion: e.descripcion || "Sin descripción", metodo: m, monto: Math.abs(e.monto) });
     });
     setEgresosPorPago(Object.entries(egresoMap).map(([metodo, total]) => ({ metodo, total })).sort((a, b) => b.total - a.total));
+    setEgresosDetalle(egresoDetailList.sort((a, b) => b.monto - a.monto));
+
+    // Transferencias por cuenta bancaria (from caja_movimientos with cuenta_bancaria)
+    const { data: transfs } = await supabase.from("caja_movimientos")
+      .select("cuenta_bancaria, monto")
+      .eq("tipo", "ingreso")
+      .eq("metodo_pago", "Transferencia")
+      .gte("fecha", start).lt("fecha", end);
+    const cuentaMap: Record<string, number> = {};
+    (transfs || []).forEach((t: any) => {
+      const cuenta = t.cuenta_bancaria || "Sin especificar";
+      cuentaMap[cuenta] = (cuentaMap[cuenta] || 0) + Math.abs(t.monto);
+    });
+    setTransferPorCuenta(Object.entries(cuentaMap).map(([cuenta, total]) => ({ cuenta, total })).sort((a, b) => b.total - a.total));
 
     setLoading(false);
   }, [mes, anio]);
 
   useEffect(() => { fetchResumen(); }, [fetchResumen]);
 
-  const totalEgresos = egresosPorPago.reduce((a, e) => a + e.total, 0);
+  const totalEgresos = useMemo(() => egresosPorPago.reduce((a, e) => a + e.total, 0), [egresosPorPago]);
 
   return (
     <div className="p-6 lg:p-8 space-y-6">
@@ -264,6 +282,16 @@ export default function ResumenMensualPage() {
                         <div className="h-full bg-primary rounded-full" style={{ width: `${(v.total / totalVentas) * 100}%` }} />
                       </div>
                       <p className="text-[11px] text-muted-foreground mt-0.5">{v.qty} operaciones · {((v.total / totalVentas) * 100).toFixed(1)}%</p>
+                      {v.metodo === "Transferencia" && transferPorCuenta.length > 0 && (
+                        <div className="mt-1.5 pl-3 space-y-0.5 border-l-2 border-primary/20">
+                          {transferPorCuenta.map((tc) => (
+                            <div key={tc.cuenta} className="flex justify-between text-[11px]">
+                              <span className="text-muted-foreground">{tc.cuenta}</span>
+                              <span className="font-medium">{fc(tc.total)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -279,13 +307,29 @@ export default function ResumenMensualPage() {
                 {egresosPorPago.length === 0 ? (
                   <p className="text-sm text-muted-foreground text-center py-4">Sin egresos en el periodo</p>
                 ) : (
-                  <div className="space-y-2">
-                    {egresosPorPago.map((e) => (
-                      <div key={e.metodo} className="flex items-center justify-between">
-                        <Badge variant="outline">{e.metodo}</Badge>
-                        <span className="text-sm font-bold text-orange-600">{fc(e.total)}</span>
+                  <div className="space-y-3">
+                    <div className="space-y-2">
+                      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Por método de pago</p>
+                      {egresosPorPago.map((e) => (
+                        <div key={e.metodo} className="flex items-center justify-between">
+                          <Badge variant="outline">{e.metodo}</Badge>
+                          <span className="text-sm font-bold text-orange-600">{fc(e.total)}</span>
+                        </div>
+                      ))}
+                    </div>
+                    {egresosDetalle.length > 0 && (
+                      <div className="space-y-1.5 pt-2 border-t">
+                        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Detalle</p>
+                        <div className="max-h-[200px] overflow-y-auto space-y-1">
+                          {egresosDetalle.map((e, i) => (
+                            <div key={i} className="flex items-center justify-between text-xs">
+                              <span className="text-muted-foreground truncate flex-1 mr-2">{e.descripcion}</span>
+                              <span className="font-medium text-orange-600 shrink-0">{fc(e.monto)}</span>
+                            </div>
+                          ))}
+                        </div>
                       </div>
-                    ))}
+                    )}
                     <div className="flex items-center justify-between pt-2 border-t font-bold">
                       <span className="text-sm">Total egresos</span>
                       <span className="text-sm text-orange-600">{fc(totalEgresos)}</span>

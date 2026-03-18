@@ -48,7 +48,7 @@ const proveedorService = new BaseService<Proveedor>("proveedores");
 
 const emptyForm = { nombre: "", cuit: "", telefono: "", email: "", domicilio: "", rubro: "", observacion: "" };
 
-const emptyPagoForm = { monto: "", forma_pago: "Efectivo", compra_id: "", observacion: "" };
+const emptyPagoForm = { monto: "", forma_pago: "Efectivo", compra_id: "", observacion: "", registrar_caja: true };
 
 export default function ProveedoresPage() {
   const [search, setSearch] = useState("");
@@ -151,16 +151,18 @@ export default function ProveedoresPage() {
       const newSaldo = Math.max(0, pagoDialog.data.saldo - monto);
       await proveedorService.update(pagoDialog.data.id, { saldo: newSaldo } as Partial<Proveedor>);
 
-      // 3. Register caja movement (egreso)
-      await supabase.from("caja_movimientos").insert({
-        fecha: todayARG(),
-        hora: new Date().toLocaleTimeString("en-GB", { timeZone: "America/Argentina/Buenos_Aires" }),
-        tipo: "egreso",
-        descripcion: `Pago a proveedor: ${pagoDialog.data.nombre}`,
-        metodo_pago: pagoForm.forma_pago,
-        monto,
-        referencia_tipo: "pago_proveedor",
-      });
+      // 3. Register caja movement (egreso) if selected
+      if (pagoForm.registrar_caja && pagoForm.forma_pago !== "Cuenta Corriente") {
+        await supabase.from("caja_movimientos").insert({
+          fecha: todayARG(),
+          hora: new Date().toLocaleTimeString("en-GB", { timeZone: "America/Argentina/Buenos_Aires" }),
+          tipo: "egreso",
+          descripcion: `Pago a proveedor: ${pagoDialog.data.nombre}`,
+          metodo_pago: pagoForm.forma_pago,
+          monto,
+          referencia_tipo: "pago_proveedor",
+        });
+      }
 
       pagoDialog.onClose();
       refetch();
@@ -325,10 +327,17 @@ export default function ProveedoresPage() {
                   <SelectContent>
                     <SelectItem value="Efectivo">Efectivo</SelectItem>
                     <SelectItem value="Transferencia">Transferencia</SelectItem>
-                    <SelectItem value="Cheque">Cheque</SelectItem>
+                    <SelectItem value="Cuenta Corriente">Cuenta Corriente</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
+
+              {(pagoForm.forma_pago === "Efectivo" || pagoForm.forma_pago === "Transferencia") && (
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={pagoForm.registrar_caja} onChange={(e) => setPagoForm({ ...pagoForm, registrar_caja: e.target.checked })} className="rounded" />
+                  <span className="text-sm">Registrar en caja diaria</span>
+                </label>
+              )}
 
               {comprasProveedor.length > 0 && (
                 <div className="space-y-2">

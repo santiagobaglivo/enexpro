@@ -70,6 +70,8 @@ export interface ReceiptSale {
   fecha: string;
   saldoAnterior: number;
   saldoNuevo: number;
+  cashReceived?: number;
+  cashChange?: number;
 }
 
 export function ReceiptPrintView({
@@ -142,24 +144,25 @@ export function ReceiptPrintView({
 
       {/* ── Client info ── */}
       <div style={{ border: "1px solid #ccc", padding: "4px 6px", marginBottom: "4px", fontSize: `${fs - 1}px`, lineHeight: "1.7" }}>
-        <div style={{ display: "flex", gap: "20px" }}>
+        <div style={{ display: "flex", gap: "10px" }}>
+          {/* Left: Cliente, Domicilio, Forma de pago */}
           <div style={{ flex: 1 }}>
-            <span style={{ fontWeight: "bold" }}>Cliente:</span> {sale.cliente}
-            {sale.clienteDireccion && <span style={{ marginLeft: "10px" }}>| Dir: {sale.clienteDireccion}</span>}
-          </div>
-          <div style={{ textAlign: "right" }}>
+            <div><span style={{ fontWeight: "bold" }}>Cliente:</span> {sale.cliente}</div>
+            {sale.clienteDireccion && <div><span style={{ fontWeight: "bold" }}>Domicilio:</span> {sale.clienteDireccion}</div>}
             <div><span style={{ fontWeight: "bold" }}>Forma de pago:</span> {sale.formaPago}</div>
+          </div>
+          {/* Center: Teléfono, Moneda */}
+          <div style={{ flex: 1, textAlign: "center" }}>
+            {sale.clienteTelefono && <div><span style={{ fontWeight: "bold" }}>Teléfono:</span> {sale.clienteTelefono}</div>}
             <div><span style={{ fontWeight: "bold" }}>Moneda:</span> {sale.moneda || "ARS"}</div>
+            {sale.clienteCondicionIva && <div><span style={{ fontWeight: "bold" }}>Cond. IVA:</span> {sale.clienteCondicionIva}</div>}
           </div>
-        </div>
-        <div style={{ display: "flex", gap: "20px" }}>
-          <div style={{ flex: 1 }}>
-            {sale.clienteTelefono && <span>Tel: {sale.clienteTelefono}</span>}
-            {sale.clienteCondicionIva && <span style={{ marginLeft: sale.clienteTelefono ? "12px" : 0 }}>| Cond. IVA: {sale.clienteCondicionIva}</span>}
+          {/* Right: Vendedor */}
+          <div style={{ flex: 1, textAlign: "right" }}>
+            {config.mostrarVendedor && (
+              <div><span style={{ fontWeight: "bold" }}>Vendedor:</span> {sale.vendedor || (sale.tipoComprobante === "Pedido Web" ? "Pedido Online" : "")}</div>
+            )}
           </div>
-          {config.mostrarVendedor && sale.vendedor && (
-            <div><span style={{ fontWeight: "bold" }}>Vendedor:</span> {sale.vendedor}</div>
-          )}
         </div>
       </div>
 
@@ -182,17 +185,30 @@ export function ReceiptPrintView({
             const totalComboUnits = item.es_combo && item.comboItems && item.comboItems.length > 0
               ? item.comboItems.reduce((s, ci) => s + ci.cantidad, 0)
               : 0;
+            const isBox = !item.es_combo && item.unidades_por_presentacion > 1;
             const precioUnitario = item.es_combo && totalComboUnits > 0
               ? item.price / totalComboUnits
-              : item.unit === "Mt" && item.unidades_por_presentacion < 1
+              : isBox
                 ? item.price / item.unidades_por_presentacion
-                : item.price;
-            const cleanDescription = item.description
+                : item.unidades_por_presentacion > 0 && item.unidades_por_presentacion < 1
+                  ? item.price / item.unidades_por_presentacion
+                  : item.price;
+            // Strip trailing " - Unidad", "(Unidad)", and any duplicate presentation text
+            let cleanDescription = item.description
               .replace(/\s*[-–]\s*Unidad(\s*\(Unidad\))?$/, "")
-              .replace(/\s*\(Unidad\)$/, "");
+              .replace(/\s*\(Unidad\)$/, "")
+              // Replace "Caja (x0.5)" or "Caja x0.5" with "Medio Cartón"
+              .replace(/Caja\s*\(?x?0\.5\)?/gi, "Medio Cartón")
+              // Clean up duplicate "Medio Cartón" / "(Medio Cartón)"
+              .replace(/(Medio\s*Cart[oó]n)\s*\(?\s*Medio\s*Cart[oó]n\s*\)?/gi, "$1");
+            // Remove duplicate presentation: e.g. "Producto (Caja x40) (Caja x40)" → "Producto (Caja x40)"
+            if (item.presentacion && item.presentacion !== "Unidad") {
+              const escaped = item.presentacion.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+              cleanDescription = cleanDescription.replace(new RegExp(`(\\(?${escaped}\\)?)\\s*\\(?${escaped}\\)?`, "gi"), "$1");
+            }
             return (
               <tr key={i} style={{ borderBottom: "1px solid #eee" }}>
-                <td style={{ padding: "3px 4px", textAlign: "left" }}>{item.unit === "Mt" && item.unidades_por_presentacion < 1 ? item.qty * item.unidades_por_presentacion : item.qty}</td>
+                <td style={{ padding: "3px 4px", textAlign: "left" }}>{item.unidades_por_presentacion > 0 && item.unidades_por_presentacion < 1 ? item.qty * item.unidades_por_presentacion : item.qty}</td>
                 <td style={{ padding: "3px 4px", textAlign: "left" }}>
                   {item.es_combo && (
                     <span style={{ fontSize: `${fs - 4}px`, fontWeight: "bold", background: "#000", color: "#fff", padding: "0px 2px", borderRadius: "2px", marginRight: "3px", letterSpacing: "0.5px" }}>COMBO</span>
@@ -205,7 +221,7 @@ export function ReceiptPrintView({
                   )}
                 </td>
                 <td style={{ padding: "3px 4px", textAlign: "center" }}>
-                  {item.es_combo && totalComboUnits > 0 ? `x${totalComboUnits} un` : item.unit || "Un"}
+                  {item.es_combo && totalComboUnits > 0 ? `x${totalComboUnits} un` : isBox ? `x${item.unidades_por_presentacion} un` : item.unit || "Un"}
                 </td>
                 <td style={{ padding: "3px 4px", textAlign: "right" }}>{fmtCur(precioUnitario)}</td>
                 {config.mostrarDescuento && (
@@ -261,6 +277,19 @@ export function ReceiptPrintView({
             TOTAL: {fmtCur(sale.total)}
           </div>
         </div>
+        {/* Cash change info */}
+        {sale.formaPago === "Efectivo" && sale.cashReceived != null && sale.cashReceived > 0 && (
+          <div style={{ borderTop: "1px solid #ccc", padding: "6px 4px", fontSize: `${fs - 1}px` }}>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "2px" }}>
+              <span>Recibido:</span>
+              <span>{fmtCur(sale.cashReceived)}</span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", fontWeight: "bold" }}>
+              <span>Vuelto:</span>
+              <span>{fmtCur(sale.cashChange ?? 0)}</span>
+            </div>
+          </div>
+        )}
         {/* Saldo info for Cuenta Corriente */}
         {(sale.formaPago === "Cuenta Corriente" || (sale.formaPago === "Mixto" && sale.saldoNuevo !== sale.saldoAnterior)) && (
           <div style={{ borderTop: "1px solid #ccc", padding: "6px 4px", fontSize: `${fs - 1}px` }}>

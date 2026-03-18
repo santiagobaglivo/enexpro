@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useMemo } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -48,6 +48,7 @@ import { LoadingSpinner } from "@/components/loading-spinner";
 import { EmptyState } from "@/components/empty-state";
 import { supabase } from "@/lib/supabase";
 import type { Venta, CajaMovimiento } from "@/types/database";
+import { showAdminToast } from "@/components/admin-toast";
 
 // ─── Types ───
 
@@ -72,7 +73,7 @@ interface TurnoCaja {
 async function getTurnoAbierto(): Promise<TurnoCaja | null> {
   const { data } = await supabase
     .from("turnos_caja")
-    .select("*")
+    .select("id, numero, fecha_apertura, hora_apertura, fecha_cierre, hora_cierre, operador, efectivo_inicial, efectivo_real, diferencia, notas, estado, created_at")
     .eq("estado", "abierto")
     .order("created_at", { ascending: false })
     .limit(1);
@@ -152,7 +153,7 @@ export default function CajaPage() {
       if (d < aperturaDate) return false;
       if (cierreDate && d > cierreDate) return false;
       return true;
-    });
+    }).sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
   }, [today, turno]);
   const { data: movements, loading: movLoading, refetch: refetchMov } = useAsyncData({
     fetcher: fetchMovements,
@@ -162,7 +163,12 @@ export default function CajaPage() {
 
   // ─── Ventas (filtered by turno time range, includes web orders) ───
   const fetchVentas = useCallback(async () => {
-    const all = await ventaService.getByFecha(today);
+    const { data: allData } = await supabase
+      .from("ventas")
+      .select("*, clientes(nombre)")
+      .eq("fecha", today)
+      .order("created_at", { ascending: false });
+    const all = (allData || []) as Venta[];
     if (!turno) return [];
     const aperturaDate = new Date(turno.created_at);
     const cierreDate = turno.estado === "cerrado" && turno.fecha_cierre && turno.hora_cierre
@@ -189,6 +195,33 @@ export default function CajaPage() {
   const abrirDialog = useDialog();
   const [movForm, setMovForm] = useState({ descripcion: "", metodo_pago: "Efectivo", monto: 0 });
   const [cierreForm, setCierreForm] = useState({ efectivo_real: 0, notas: "" });
+
+  // Sellers map for display
+  const [sellersMap, setSellersMap] = useState<Record<string, string>>({});
+  useEffect(() => {
+    supabase.from("usuarios").select("id, nombre").eq("activo", true).then(({ data }) => {
+      const map: Record<string, string> = {};
+      (data || []).forEach((u: any) => { map[u.id] = u.nombre; });
+      setSellersMap(map);
+    });
+  }, []);
+
+  // Sale detail for viewing
+  const [ventaDetailOpen, setVentaDetailOpen] = useState(false);
+  const [ventaDetail, setVentaDetail] = useState<Venta | null>(null);
+  const [ventaDetailItems, setVentaDetailItems] = useState<any[]>([]);
+  const [ventaDetailMovs, setVentaDetailMovs] = useState<any[]>([]);
+
+  const openVentaDetail = async (v: Venta) => {
+    setVentaDetail(v);
+    setVentaDetailOpen(true);
+    const [{ data: items }, { data: movs }] = await Promise.all([
+      supabase.from("venta_items").select("*").eq("venta_id", v.id).order("created_at"),
+      supabase.from("caja_movimientos").select("id, tipo, descripcion, metodo_pago, monto, referencia_id, referencia_tipo, created_at").eq("referencia_id", v.id).order("created_at"),
+    ]);
+    setVentaDetailItems(items || []);
+    setVentaDetailMovs(movs || []);
+  };
 
   // History
   const [histOpen, setHistOpen] = useState(false);
@@ -221,6 +254,7 @@ export default function CajaPage() {
     setTurno(t);
     abrirDialog.onClose();
     setAbrirForm({ efectivo_inicial: 0, operador: "" });
+    showAdminToast("Turno abierto correctamente");
     // Refetch so data is filtered by new turno
     setTimeout(() => { refetchMov(); refetchVentas(); }, 100);
   };
@@ -244,6 +278,7 @@ export default function CajaPage() {
     }
     movDialog.onClose();
     refetchMov();
+    showAdminToast(type === "ingreso" ? "Ingreso registrado" : "Egreso registrado");
   };
 
   const openCierreDialog = () => {
@@ -259,6 +294,7 @@ export default function CajaPage() {
     cierreDialog.onClose();
     refetchMov();
     refetchVentas();
+    showAdminToast("Turno cerrado correctamente");
   };
 
   const openHistorial = async () => {
@@ -267,7 +303,7 @@ export default function CajaPage() {
     setHistLoading(true);
     const { data } = await supabase
       .from("turnos_caja")
-      .select("*")
+      .select("id, numero, fecha_apertura, hora_apertura, fecha_cierre, hora_cierre, operador, efectivo_inicial, efectivo_real, diferencia, notas, estado, created_at")
       .eq("estado", "cerrado")
       .order("created_at", { ascending: false })
       .limit(30);
@@ -289,8 +325,8 @@ export default function CajaPage() {
         : null;
 
     const [{ data: movs }, { data: vts }] = await Promise.all([
-      supabase.from("caja_movimientos").select("*").eq("fecha", fecha).order("hora"),
-      supabase.from("ventas").select("*").eq("fecha", fecha).not("tipo_comprobante", "ilike", "Nota de Crédito%").order("created_at"),
+      supabase.from("caja_movimientos").select("id, tipo, descripcion, metodo_pago, monto, hora, fecha, referencia_id, referencia_tipo, created_at").eq("fecha", fecha).order("hora", { ascending: false }),
+      supabase.from("ventas").select("id, numero, fecha, total, forma_pago, tipo_comprobante, vendedor_id, origen, created_at, clientes(nombre)").eq("fecha", fecha).not("tipo_comprobante", "ilike", "Nota de Crédito%").order("created_at", { ascending: false }),
     ]);
 
     // Filter by turno time range using Date comparison
@@ -312,53 +348,79 @@ export default function CajaPage() {
 
   // ─── Derived calculations ───
 
-  const ventasPorMetodo = (metodo: string) =>
-    ventas.filter((v) => v.forma_pago === metodo).reduce((a, v) => a + v.total, 0);
+  const {
+    ventasEfectivo,
+    ventasTransferencia,
+    ventasCuentaCorriente,
+    totalVentas,
+    depositos,
+    gastos,
+    notasCreditoEgresos,
+    retiros,
+    efectivoEsperado,
+    efectivoInicial,
+  } = useMemo(() => {
+    const ventasPorMetodo = (metodo: string) =>
+      ventas.filter((v) => v.forma_pago === metodo).reduce((a, v) => a + v.total, 0);
 
-  // Calculate real totals per method using caja_movimientos (handles mixto split)
-  const movPorMetodo = (metodo: string) =>
-    movements
-      .filter((m) => m.tipo === "ingreso" && m.referencia_tipo === "venta" && m.metodo_pago === metodo)
+    // Calculate real totals per method using caja_movimientos (handles mixto split)
+    const movPorMetodo = (metodo: string) =>
+      movements
+        .filter((m) => m.tipo === "ingreso" && m.referencia_tipo === "venta" && m.metodo_pago === metodo)
+        .reduce((a, m) => a + m.monto, 0);
+
+    const ventasEfectivo = movPorMetodo("Efectivo");
+    const ventasTransferencia = movPorMetodo("Transferencia");
+    // Cuenta corriente doesn't go through caja_movimientos, sum from ventas
+    const ventasCuentaCorriente = ventasPorMetodo("Cuenta Corriente")
+      + ventas.filter((v) => v.forma_pago === "Mixto").reduce((acc, v) => {
+        const ccMov = movements.find(
+          (m) => m.referencia_id === v.id && m.metodo_pago === "Cuenta Corriente"
+        );
+        // If no caja_movimiento for CC (it goes to cuenta_corriente table), estimate from total - other movs
+        if (!ccMov) {
+          const otherMovs = movements
+            .filter((m) => m.referencia_id === v.id && m.referencia_tipo === "venta")
+            .reduce((a, m) => a + m.monto, 0);
+          const ccPart = v.total - otherMovs;
+          return acc + (ccPart > 0 ? ccPart : 0);
+        }
+        return acc;
+      }, 0);
+    const totalVentas = ventas.reduce((a, v) => a + v.total, 0);
+
+    const depositos = movements
+      .filter((m) => m.tipo === "ingreso" && m.metodo_pago === "Efectivo" && m.referencia_tipo !== "venta")
       .reduce((a, m) => a + m.monto, 0);
 
-  const ventasEfectivo = movPorMetodo("Efectivo");
-  const ventasTransferencia = movPorMetodo("Transferencia");
-  // Cuenta corriente doesn't go through caja_movimientos, sum from ventas
-  const ventasCuentaCorriente = ventasPorMetodo("Cuenta Corriente")
-    + ventas.filter((v) => v.forma_pago === "Mixto").reduce((acc, v) => {
-      const ccMov = movements.find(
-        (m) => m.referencia_id === v.id && m.metodo_pago === "Cuenta Corriente"
-      );
-      // If no caja_movimiento for CC (it goes to cuenta_corriente table), estimate from total - other movs
-      if (!ccMov) {
-        const otherMovs = movements
-          .filter((m) => m.referencia_id === v.id && m.referencia_tipo === "venta")
-          .reduce((a, m) => a + m.monto, 0);
-        const ccPart = v.total - otherMovs;
-        return acc + (ccPart > 0 ? ccPart : 0);
-      }
-      return acc;
-    }, 0);
-  const totalVentas = ventas.reduce((a, v) => a + v.total, 0);
+    const gastos = movements
+      .filter((m) => m.tipo === "egreso" && m.descripcion.toLowerCase().includes("gasto"))
+      .reduce((a, m) => a + Math.abs(m.monto), 0);
 
-  const depositos = movements
-    .filter((m) => m.tipo === "ingreso" && m.metodo_pago === "Efectivo" && m.referencia_tipo !== "venta")
-    .reduce((a, m) => a + m.monto, 0);
+    const notasCreditoEgresos = movements
+      .filter((m) => m.tipo === "egreso" && m.referencia_tipo === "nota_credito")
+      .reduce((a, m) => a + Math.abs(m.monto), 0);
 
-  const gastos = movements
-    .filter((m) => m.tipo === "egreso" && m.descripcion.toLowerCase().includes("gasto"))
-    .reduce((a, m) => a + Math.abs(m.monto), 0);
+    const retiros = movements
+      .filter((m) => m.tipo === "egreso" && !m.descripcion.toLowerCase().includes("gasto") && m.referencia_tipo !== "nota_credito")
+      .reduce((a, m) => a + Math.abs(m.monto), 0);
 
-  const notasCreditoEgresos = movements
-    .filter((m) => m.tipo === "egreso" && m.referencia_tipo === "nota_credito")
-    .reduce((a, m) => a + Math.abs(m.monto), 0);
+    const efectivoInicial = turno?.efectivo_inicial ?? 0;
+    const efectivoEsperado = efectivoInicial + ventasEfectivo + depositos - gastos - retiros - notasCreditoEgresos;
 
-  const retiros = movements
-    .filter((m) => m.tipo === "egreso" && !m.descripcion.toLowerCase().includes("gasto") && m.referencia_tipo !== "nota_credito")
-    .reduce((a, m) => a + Math.abs(m.monto), 0);
-
-  const efectivoInicial = turno?.efectivo_inicial ?? 0;
-  const efectivoEsperado = efectivoInicial + ventasEfectivo + depositos - gastos - retiros - notasCreditoEgresos;
+    return {
+      ventasEfectivo,
+      ventasTransferencia,
+      ventasCuentaCorriente,
+      totalVentas,
+      depositos,
+      gastos,
+      notasCreditoEgresos,
+      retiros,
+      efectivoEsperado,
+      efectivoInicial,
+    };
+  }, [ventas, movements, turno]);
 
   const loading = turnoLoading || movLoading || ventasLoading;
 
@@ -672,21 +734,31 @@ export default function CajaPage() {
                       <thead>
                         <tr className="border-b text-muted-foreground">
                           <th className="text-left py-3 px-4 font-medium">N.</th>
+                          <th className="text-left py-3 px-4 font-medium">Cliente</th>
+                          <th className="text-left py-3 px-4 font-medium">Vendedor</th>
                           <th className="text-left py-3 px-4 font-medium">Forma Pago</th>
                           <th className="text-right py-3 px-4 font-medium">Total</th>
+                          <th className="w-10"></th>
                         </tr>
                       </thead>
                       <tbody>
                         {ventas.map((v) => (
                           <tr
                             key={v.id}
-                            className="border-b last:border-0 hover:bg-muted/50 transition-colors"
+                            className="border-b last:border-0 hover:bg-muted/50 transition-colors cursor-pointer"
+                            onClick={() => openVentaDetail(v)}
                           >
                             <td className="py-3 px-4 font-mono text-xs">
                               {v.numero}
                               {(v as any).origen === "tienda" && (
                                 <Badge variant="outline" className="ml-2 text-[10px] px-1 py-0 border-pink-300 text-pink-600">Web</Badge>
                               )}
+                            </td>
+                            <td className="py-3 px-4 text-xs">
+                              {(v as any).clientes?.nombre || "—"}
+                            </td>
+                            <td className="py-3 px-4 text-xs text-muted-foreground">
+                              {(v as any).vendedor_id ? sellersMap[(v as any).vendedor_id] || "—" : "—"}
                             </td>
                             <td className="py-3 px-4">
                               <Badge variant="secondary" className="text-xs font-normal">
@@ -695,6 +767,9 @@ export default function CajaPage() {
                             </td>
                             <td className="py-3 px-4 text-right font-semibold text-emerald-600">
                               {formatCurrency(v.total)}
+                            </td>
+                            <td className="py-3 px-1">
+                              <Eye className="w-3.5 h-3.5 text-muted-foreground" />
                             </td>
                           </tr>
                         ))}
@@ -1209,6 +1284,87 @@ export default function CajaPage() {
                   <Lock className="w-4 h-4 mr-2" />
                   Cerrar Turno
                 </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+      {/* Venta Detail Dialog */}
+      <Dialog open={ventaDetailOpen} onOpenChange={setVentaDetailOpen}>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Venta {ventaDetail?.numero}</DialogTitle>
+          </DialogHeader>
+          {ventaDetail && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-4 text-sm">
+                <div><span className="text-muted-foreground">Cliente:</span> <span className="font-medium ml-1">{(ventaDetail as any).clientes?.nombre || "—"}</span></div>
+                <div><span className="text-muted-foreground">Vendedor:</span> <span className="font-medium ml-1">{(ventaDetail as any).vendedor_id ? sellersMap[(ventaDetail as any).vendedor_id] || "—" : "—"}</span></div>
+                <div><span className="text-muted-foreground">Pago:</span> <span className="font-medium ml-1">{ventaDetail.forma_pago}</span></div>
+                <div><span className="text-muted-foreground">Total:</span> <span className="font-bold ml-1 text-emerald-600">{formatCurrency(ventaDetail.total)}</span></div>
+              </div>
+
+              {/* Mixed payment detail */}
+              {ventaDetail.forma_pago === "Mixto" && ventaDetailMovs.length > 0 && (
+                <div className="space-y-1.5 p-3 bg-muted/50 rounded-lg">
+                  <p className="text-xs font-semibold text-muted-foreground uppercase">Detalle pago mixto</p>
+                  {ventaDetailMovs.filter((m: any) => m.tipo === "ingreso").map((m: any, i: number) => {
+                    const desc = (m.descripcion || "").toLowerCase();
+                    const isDebtCollection = desc.includes("cobro") || desc.includes("saldo") || desc.includes("deuda");
+                    return (
+                      <div key={i} className="flex justify-between text-sm">
+                        <span className="text-muted-foreground">
+                          {m.metodo_pago}
+                          {isDebtCollection && (
+                            <span className="ml-1 text-xs text-amber-600 font-medium">(Cobro saldo anterior)</span>
+                          )}
+                        </span>
+                        <span className="font-medium">{formatCurrency(Math.abs(m.monto))}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Items */}
+              <div className="overflow-x-auto border rounded-lg">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b bg-muted/50 text-muted-foreground">
+                      <th className="text-left py-2 px-3 font-medium">Producto</th>
+                      <th className="text-center py-2 px-3 font-medium">Cant</th>
+                      <th className="text-right py-2 px-3 font-medium">Precio</th>
+                      <th className="text-right py-2 px-3 font-medium">Desc%</th>
+                      <th className="text-right py-2 px-3 font-medium">Subtotal</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {ventaDetailItems.map((item: any) => {
+                      const unidades = item.unidades_por_presentacion || 1;
+                      const isBox = unidades > 1;
+                      const unitPrice = isBox ? item.precio_unitario / unidades : item.precio_unitario;
+                      // Clean description: remove duplicate presentations and "(Unidad)"
+                      const rawName = item.descripcion || item.nombre_producto || "";
+                      const cleanName = rawName
+                        .replace(/\s*\(Unidad\)/gi, "")
+                        .replace(/\s*[-–]\s*Unidad$/i, "")
+                        .replace(/(\([^)]+\))\s*\1/gi, "$1")
+                        .trim();
+                      return (
+                        <tr key={item.id} className="border-b last:border-0">
+                          <td className="py-2 px-3">
+                            <span>{cleanName}</span>
+                            {item.es_combo && <span className="ml-1.5 text-[10px] bg-violet-100 text-violet-700 px-1.5 py-0.5 rounded-full font-medium">Combo</span>}
+                          </td>
+                          <td className="py-2 px-3 text-center">{unidades > 0 && unidades < 1 ? item.cantidad * unidades : item.cantidad}</td>
+                          <td className="py-2 px-3 text-right">{formatCurrency(unitPrice)}{isBox && <span className="block text-[10px] text-muted-foreground">c/u (x{unidades})</span>}</td>
+                          <td className="py-2 px-3 text-right">{item.descuento ? `${item.descuento}%` : "—"}</td>
+                          <td className="py-2 px-3 text-right font-semibold">{formatCurrency(item.subtotal)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
             </div>
           )}

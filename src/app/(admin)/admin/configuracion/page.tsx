@@ -46,6 +46,7 @@ import {
   LayoutDashboard,
   Lock,
 } from "lucide-react";
+import { showAdminToast } from "@/components/admin-toast";
 
 // ─── Receipt config (shared with POS) ───
 interface ReceiptConfig {
@@ -55,10 +56,19 @@ interface ReceiptConfig {
   empresaIngrBrutos: string;
   footerTexto: string;
   fontSize: number;
+  fontSizeEmpresa: number;
+  fontSizeCliente: number;
+  fontSizeProductos: number;
+  fontSizeResumen: number;
   logoHeight: number;
   mostrarLogo: boolean;
   mostrarVendedor: boolean;
   mostrarDescuento: boolean;
+  mostrarVuelto: boolean;
+  mostrarDireccion: boolean;
+  mostrarTelefono: boolean;
+  mostrarFormaPago: boolean;
+  mostrarMoneda: boolean;
 }
 
 const defaultReceiptConfig: ReceiptConfig = {
@@ -68,10 +78,19 @@ const defaultReceiptConfig: ReceiptConfig = {
   empresaIngrBrutos: "20443387898",
   footerTexto: "Gracias por su compra",
   fontSize: 12,
+  fontSizeEmpresa: 12,
+  fontSizeCliente: 11,
+  fontSizeProductos: 11,
+  fontSizeResumen: 14,
   logoHeight: 60,
   mostrarLogo: true,
   mostrarVendedor: true,
   mostrarDescuento: true,
+  mostrarVuelto: false,
+  mostrarDireccion: true,
+  mostrarTelefono: true,
+  mostrarFormaPago: true,
+  mostrarMoneda: true,
 };
 
 // ─── Bank accounts config ───
@@ -141,6 +160,7 @@ export default function ConfiguracionPage() {
   const [cuentaForm, setCuentaForm] = useState({ nombre: "", tipo: "Caja de Ahorro", cbu_cvu: "", alias: "" });
   const [showCuentaForm, setShowCuentaForm] = useState(false);
   const [activeSection, setActiveSection] = useState<Section>("empresa");
+  const [successMsg, setSuccessMsg] = useState("");
 
   // ─── Module enable/disable ───
   const allModulos = ["Dashboard", "Ventas", "Clientes", "Productos", "Proveedores", "Compras", "Caja", "Tienda Online", "Configuración"] as const;
@@ -191,6 +211,12 @@ export default function ConfiguracionPage() {
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
+  const showSuccess = (msg: string) => {
+    setSuccessMsg(msg);
+    setTimeout(() => setSuccessMsg(""), 3000);
+    showAdminToast(msg);
+  };
+
   const saveEmpresa = async () => {
     if (!empresa) return;
     setSaving("empresa");
@@ -203,6 +229,7 @@ export default function ConfiguracionPage() {
       telefono: empresa.telefono,
     }).eq("id", empresa.id);
     setSaving(null);
+    showSuccess("Datos de empresa guardados correctamente");
   };
 
   const saveBilling = async () => {
@@ -215,6 +242,7 @@ export default function ConfiguracionPage() {
       moneda_default: empresa.moneda_default,
     }).eq("id", empresa.id);
     setSaving(null);
+    showSuccess("Configuración de facturación guardada");
   };
 
   const savePrint = async () => {
@@ -224,6 +252,7 @@ export default function ConfiguracionPage() {
       formato_ticket: empresa.formato_ticket,
     }).eq("id", empresa.id);
     setSaving(null);
+    showSuccess("Formato de impresión guardado");
   };
 
   const e = (key: keyof Empresa, value: string) => {
@@ -267,6 +296,13 @@ export default function ConfiguracionPage() {
           <p className="text-muted-foreground text-sm">Ajustes del sistema y empresa</p>
         </div>
       </div>
+
+      {/* Success toast */}
+      {successMsg && (
+        <div className="fixed top-4 right-4 z-50 animate-in slide-in-from-top-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-700 shadow-lg">
+          <Check className="w-4 h-4 inline mr-2" />{successMsg}
+        </div>
+      )}
 
       {/* 2-column layout */}
       <div className="flex gap-8">
@@ -537,46 +573,92 @@ export default function ConfiguracionPage() {
                   </CardContent>
                 </Card>
 
-                {/* Opciones visualización group */}
+                {/* Sección 1: Datos del Mayorista */}
                 <Card>
                   <CardHeader className="pb-3">
-                    <div className="flex items-center gap-2">
-                      <SlidersHorizontal className="w-4 h-4 text-muted-foreground" />
-                      <CardTitle className="text-sm">Opciones de visualización</CardTitle>
-                    </div>
-                    <CardDescription className="text-xs">Controlar qué elementos se muestran y su apariencia</CardDescription>
+                    <CardTitle className="text-sm">Sección 1 — Datos del Mayorista</CardTitle>
+                    <CardDescription className="text-xs">Encabezado con logo, nombre y datos fiscales</CardDescription>
                   </CardHeader>
-                  <CardContent className="space-y-4">
+                  <CardContent className="space-y-3">
                     <div className="flex items-center gap-3">
-                      <Label className="text-xs text-muted-foreground whitespace-nowrap">Tamaño de letra:</Label>
-                      <Input type="number" value={rcfg.fontSize} onChange={(ev) => setRcfg({ ...rcfg, fontSize: Number(ev.target.value) })} className="h-9 w-24" min={8} max={18} />
+                      <Label className="text-xs text-muted-foreground whitespace-nowrap">Tamaño fuente:</Label>
+                      <Input type="number" value={rcfg.fontSizeEmpresa || rcfg.fontSize} onChange={(ev) => setRcfg({ ...rcfg, fontSizeEmpresa: Number(ev.target.value) })} className="h-8 w-20" min={8} max={18} />
+                      <span className="text-xs text-muted-foreground">px</span>
+                    </div>
+                  </CardContent>
+                </Card>
+
+                {/* Sección 2: Datos del Cliente */}
+                <Card>
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-sm">Sección 2 — Datos del Cliente</CardTitle>
+                    <CardDescription className="text-xs">Información del cliente en el comprobante</CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    <div className="flex items-center gap-3">
+                      <Label className="text-xs text-muted-foreground whitespace-nowrap">Tamaño fuente:</Label>
+                      <Input type="number" value={rcfg.fontSizeCliente || rcfg.fontSize} onChange={(ev) => setRcfg({ ...rcfg, fontSizeCliente: Number(ev.target.value) })} className="h-8 w-20" min={8} max={18} />
+                      <span className="text-xs text-muted-foreground">px</span>
+                    </div>
+                    <p className="text-xs text-muted-foreground font-medium pt-2">Campos a mostrar:</p>
+                    {[
+                      { key: "mostrarDireccion" as const, label: "Domicilio" },
+                      { key: "mostrarTelefono" as const, label: "Teléfono" },
+                      { key: "mostrarFormaPago" as const, label: "Forma de pago" },
+                      { key: "mostrarMoneda" as const, label: "Moneda" },
+                      { key: "mostrarVendedor" as const, label: "Vendedor" },
+                    ].map(({ key, label }) => (
+                      <div key={key} className="flex items-center gap-3">
+                        <button type="button" onClick={() => setRcfg({ ...rcfg, [key]: !rcfg[key] })}
+                          className={cn("relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 border-transparent transition-colors cursor-pointer", rcfg[key] ? "bg-emerald-500" : "bg-gray-300")}>
+                          <span className={cn("pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform", rcfg[key] ? "translate-x-4" : "translate-x-0")} />
+                        </button>
+                        <span className="text-sm">{label}</span>
+                      </div>
+                    ))}
+                  </CardContent>
+                </Card>
+
+                {/* Sección 3: Productos */}
+                <Card>
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-sm">Sección 3 — Productos</CardTitle>
+                    <CardDescription className="text-xs">Tabla de artículos del comprobante</CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    <div className="flex items-center gap-3">
+                      <Label className="text-xs text-muted-foreground whitespace-nowrap">Tamaño fuente:</Label>
+                      <Input type="number" value={rcfg.fontSizeProductos || rcfg.fontSize} onChange={(ev) => setRcfg({ ...rcfg, fontSizeProductos: Number(ev.target.value) })} className="h-8 w-20" min={8} max={18} />
                       <span className="text-xs text-muted-foreground">px</span>
                     </div>
                     <div className="flex items-center gap-3">
-                      <button
-                        type="button"
-                        onClick={() => setRcfg({ ...rcfg, mostrarVendedor: !rcfg.mostrarVendedor })}
-                        className={cn(
-                          "relative inline-flex h-6 w-11 shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none cursor-pointer",
-                          rcfg.mostrarVendedor ? "bg-emerald-500" : "bg-gray-300"
-                        )}
-                      >
-                        <span className={cn("pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow transform transition-transform duration-200 ease-in-out", rcfg.mostrarVendedor ? "translate-x-5" : "translate-x-0")} />
-                      </button>
-                      <span className="text-sm">Mostrar vendedor</span>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <button
-                        type="button"
-                        onClick={() => setRcfg({ ...rcfg, mostrarDescuento: !rcfg.mostrarDescuento })}
-                        className={cn(
-                          "relative inline-flex h-6 w-11 shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none cursor-pointer",
-                          rcfg.mostrarDescuento ? "bg-emerald-500" : "bg-gray-300"
-                        )}
-                      >
-                        <span className={cn("pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow transform transition-transform duration-200 ease-in-out", rcfg.mostrarDescuento ? "translate-x-5" : "translate-x-0")} />
+                      <button type="button" onClick={() => setRcfg({ ...rcfg, mostrarDescuento: !rcfg.mostrarDescuento })}
+                        className={cn("relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 border-transparent transition-colors cursor-pointer", rcfg.mostrarDescuento ? "bg-emerald-500" : "bg-gray-300")}>
+                        <span className={cn("pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform", rcfg.mostrarDescuento ? "translate-x-4" : "translate-x-0")} />
                       </button>
                       <span className="text-sm">Mostrar columna de descuento</span>
+                    </div>
+                  </CardContent>
+                </Card>
+
+                {/* Sección 4: Resumen de Pago */}
+                <Card>
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-sm">Sección 4 — Resumen de Pago</CardTitle>
+                    <CardDescription className="text-xs">Total, descuentos, recargos y vuelto</CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    <div className="flex items-center gap-3">
+                      <Label className="text-xs text-muted-foreground whitespace-nowrap">Tamaño fuente:</Label>
+                      <Input type="number" value={rcfg.fontSizeResumen || 14} onChange={(ev) => setRcfg({ ...rcfg, fontSizeResumen: Number(ev.target.value) })} className="h-8 w-20" min={8} max={24} />
+                      <span className="text-xs text-muted-foreground">px</span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <button type="button" onClick={() => setRcfg({ ...rcfg, mostrarVuelto: !rcfg.mostrarVuelto })}
+                        className={cn("relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 border-transparent transition-colors cursor-pointer", rcfg.mostrarVuelto ? "bg-emerald-500" : "bg-gray-300")}>
+                        <span className={cn("pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform", rcfg.mostrarVuelto ? "translate-x-4" : "translate-x-0")} />
+                      </button>
+                      <span className="text-sm">Mostrar vuelto del cliente (pago en efectivo)</span>
                     </div>
                   </CardContent>
                 </Card>
@@ -623,11 +705,20 @@ export default function ConfiguracionPage() {
                             </div>
                           </div>
                         </div>
-                        {/* Client */}
-                        <div style={{ border: "1px solid #ccc", padding: "4px 6px", marginBottom: "4px", fontSize: `${rcfg.fontSize - 1}px` }}>
-                          <div>Cliente: Consumidor Final</div>
-                          {rcfg.mostrarVendedor && <div>Vendedor: Juan Pérez</div>}
-                          <div>Forma de pago: Efectivo</div>
+                        {/* Client - horizontal layout */}
+                        <div style={{ border: "1px solid #ccc", padding: "4px 6px", marginBottom: "4px", fontSize: `${rcfg.fontSizeCliente || rcfg.fontSize - 1}px`, display: "flex", gap: "16px" }}>
+                          <div style={{ flex: 1 }}>
+                            <div>Cliente: Consumidor Final</div>
+                            {rcfg.mostrarDireccion && <div>Domicilio: Av. Corrientes 1234</div>}
+                            {rcfg.mostrarFormaPago && <div>Forma de pago: Efectivo</div>}
+                          </div>
+                          <div style={{ flex: 1 }}>
+                            {rcfg.mostrarTelefono && <div>Teléfono: 11-2345-6789</div>}
+                            {rcfg.mostrarMoneda && <div>Moneda: ARS</div>}
+                          </div>
+                          <div style={{ flex: 1, textAlign: "right" }}>
+                            {rcfg.mostrarVendedor && <div>Vendedor: Juan Pérez</div>}
+                          </div>
                         </div>
                         {/* Items preview */}
                         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: `${rcfg.fontSize - 1}px` }}>
@@ -670,7 +761,7 @@ export default function ConfiguracionPage() {
                 </Card>
 
                 <div className="flex justify-end">
-                  <Button onClick={() => { saveReceiptConfig(rcfg); setSaving("receipt"); setTimeout(() => setSaving(null), 600); }} disabled={saving === "receipt"}>
+                  <Button onClick={() => { saveReceiptConfig(rcfg); setSaving("receipt"); setTimeout(() => setSaving(null), 600); showSuccess("Configuración de comprobantes guardada"); }} disabled={saving === "receipt"}>
                     {saving === "receipt" ? <Check className="w-4 h-4 mr-2" /> : <Check className="w-4 h-4 mr-2" />}
                     {saving === "receipt" ? "Guardado" : "Guardar configuración"}
                   </Button>
