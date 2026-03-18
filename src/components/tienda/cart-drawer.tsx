@@ -285,6 +285,9 @@ function CartDrawer() {
                       {(() => {
                         const maxQty = getMaxQty(item);
                         const atMax = item.cantidad >= maxQty;
+                        const isMedio = item.presentacion?.toLowerCase().includes("medio") || item.id.includes("Medio");
+                        const step = isMedio ? 0.5 : 1;
+                        const displayQty = isMedio ? item.cantidad * 0.5 : item.cantidad;
                         return (
                       <div className="inline-flex items-center rounded-lg border border-gray-200">
                         <button
@@ -293,8 +296,8 @@ function CartDrawer() {
                         >
                           <Minus className="h-3.5 w-3.5" />
                         </button>
-                        <span className="flex h-8 w-8 items-center justify-center text-center text-sm font-semibold text-gray-800">
-                          {item.cantidad}
+                        <span className="flex h-8 w-10 items-center justify-center text-center text-sm font-semibold text-gray-800">
+                          {isMedio ? displayQty : item.cantidad}
                         </span>
                         <button
                           onClick={() => updateQuantity(item.id, Math.min(item.cantidad + 1, maxQty))}
