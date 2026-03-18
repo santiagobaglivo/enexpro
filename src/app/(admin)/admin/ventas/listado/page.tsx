@@ -87,143 +87,180 @@ function formatCurrency(value: number) {
   return new Intl.NumberFormat("es-AR", { style: "currency", currency: "ARS", minimumFractionDigits: 0 }).format(value);
 }
 
-function formatCurrencyPDF(value: number) {
-  return "$" + new Intl.NumberFormat("es-AR", { minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(value);
-}
-
-function formatCurrencyTotal(value: number) {
-  return "$ " + new Intl.NumberFormat("es-AR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
-}
-
 function formatDatePDF(fecha: string) {
   const d = new Date(fecha + "T12:00:00");
   return `${d.getDate()}/${d.getMonth() + 1}/${d.getFullYear()}`;
 }
 
-// ─── Remito PDF Component ───
-function RemitoPrintView({
-  remito,
-  items,
-  empresa,
-  vendedorNombre,
-  clienteSaldo,
-}: {
-  remito: VentaRow;
-  items: VentaItemRow[];
-  empresa: Empresa | null;
-  vendedorNombre: string;
-  clienteSaldo: number;
-}) {
-  const cliente = remito.clientes;
-  const clienteDomicilio = [
-    cliente?.domicilio, cliente?.localidad, cliente?.provincia,
-    cliente?.codigo_postal ? `CP ${cliente.codigo_postal}` : null,
-  ].filter(Boolean).join(", ");
+// ─── Receipt config (same as POS) ───
+interface ReceiptConfig {
+  logoUrl: string;
+  empresaNombre: string;
+  empresaWeb: string;
+  empresaDomicilio: string;
+  empresaTelefono: string;
+  empresaCuit: string;
+  empresaIva: string;
+  empresaInicioAct: string;
+  empresaIngrBrutos: string;
+  footerTexto: string;
+  fontSize: number;
+  logoHeight: number;
+  mostrarLogo: boolean;
+  mostrarVendedor: boolean;
+  mostrarDescuento: boolean;
+}
 
-  const saldoLabel = `Saldo al ${formatDatePDF(remito.fecha)}: ${formatCurrencyTotal(clienteSaldo)}`;
+const defaultReceiptConfig: ReceiptConfig = {
+  logoUrl: "https://www.dulcesur.com/assets/logotipo.png",
+  empresaNombre: "DULCE SUR",
+  empresaWeb: "www.dulcesur.com",
+  empresaDomicilio: "Francisco Canaro 4012",
+  empresaTelefono: "116299-1571",
+  empresaCuit: "20443387898",
+  empresaIva: "Monotributista Social",
+  empresaInicioAct: "15/2/2021",
+  empresaIngrBrutos: "20443387898",
+  footerTexto: "Gracias por su compra",
+  fontSize: 12,
+  logoHeight: 60,
+  mostrarLogo: true,
+  mostrarVendedor: true,
+  mostrarDescuento: true,
+};
+
+interface LineItem {
+  id: string;
+  producto_id: string;
+  code: string;
+  description: string;
+  qty: number;
+  unit: string;
+  price: number;
+  discount: number;
+  subtotal: number;
+  presentacion: string;
+  unidades_por_presentacion: number;
+  stock: number;
+  es_combo?: boolean;
+}
+
+function ReceiptPrintView({ sale, config }: {
+  sale: {
+    numero: string; total: number; subtotal: number; descuento: number; recargo: number;
+    transferSurcharge: number; tipoComprobante: string; formaPago: string;
+    cliente: string; vendedor: string; items: LineItem[]; fecha: string;
+    saldoAnterior: number; saldoNuevo: number;
+  };
+  config: ReceiptConfig;
+}) {
+  const fs = config.fontSize;
+  const fmtCur = (v: number) =>
+    new Intl.NumberFormat("es-AR", { style: "currency", currency: "ARS", minimumFractionDigits: 0 }).format(v);
 
   return (
-    <div style={{ width: "210mm", minHeight: "297mm", padding: "8mm 10mm", fontFamily: "Arial, Helvetica, sans-serif", fontSize: "11px", color: "#000", background: "#fff", display: "flex", flexDirection: "column" }}>
+    <div style={{ width: "210mm", minHeight: "297mm", padding: "8mm 10mm", fontFamily: "Arial, Helvetica, sans-serif", fontSize: `${fs}px`, color: "#000", background: "#fff", display: "flex", flexDirection: "column" }}>
       {/* Header */}
       <div style={{ display: "flex", borderBottom: "2px solid #000", paddingBottom: "6px", marginBottom: "4px" }}>
         <div style={{ flex: 1 }}>
           <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "4px" }}>
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="https://www.dulcesur.com/assets/logotipo.png" alt="Logo" style={{ height: "50px" }} />
+            {config.mostrarLogo && config.logoUrl && (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={config.logoUrl} alt="Logo" style={{ height: `${config.logoHeight}px` }} />
+            )}
+            {!config.mostrarLogo && (
+              <div style={{ fontSize: `${fs + 8}px`, fontWeight: "bold" }}>{config.empresaNombre}</div>
+            )}
           </div>
-          <div style={{ fontSize: "9px", lineHeight: "1.4" }}>
-            <div style={{ fontWeight: "bold" }}>www.dulcesur.com</div>
-            <div>{empresa?.domicilio || "Francisco Canaro 4012"} | Tel: {empresa?.telefono || "116299-1571"}</div>
+          <div style={{ fontSize: `${fs - 2}px`, lineHeight: "1.5" }}>
+            {config.empresaWeb && <div style={{ fontWeight: "bold" }}>{config.empresaWeb}</div>}
+            <div>{config.empresaDomicilio} | Tel: {config.empresaTelefono}</div>
           </div>
         </div>
-        <div style={{ width: "50px", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-start", borderLeft: "2px solid #000", borderRight: "2px solid #000", padding: "0 8px" }}>
-          <div style={{ fontSize: "28px", fontWeight: "bold", lineHeight: 1 }}>X</div>
-          <div style={{ fontSize: "7px", textAlign: "center", lineHeight: "1.2", marginTop: "2px" }}>Documento no válido como factura</div>
-          <div style={{ fontSize: "11px", fontWeight: "bold", marginTop: "4px" }}>Remito X</div>
+        <div style={{ width: "55px", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-start", borderLeft: "2px solid #000", borderRight: "2px solid #000", padding: "0 8px" }}>
+          <div style={{ fontSize: "30px", fontWeight: "bold", lineHeight: 1 }}>X</div>
+          <div style={{ fontSize: "8px", textAlign: "center", lineHeight: "1.2", marginTop: "2px" }}>Documento no válido como factura</div>
         </div>
         <div style={{ flex: 1, paddingLeft: "10px" }}>
-          <div style={{ fontSize: "14px", fontWeight: "bold", marginBottom: "4px" }}>N° {remito.numero}</div>
-          <div style={{ fontSize: "9px", lineHeight: "1.5" }}>
-            <div>Fecha: {formatDatePDF(remito.fecha)}</div>
-            <div>CUIT: {empresa?.cuit || "20443387898"}</div>
-            <div>Ing.Brutos: {empresa?.cuit || "20443387898"}</div>
-            <div>Cond.IVA: {empresa?.situacion_iva || "Monotributista Social"}</div>
-            <div>Inicio de Actividad: 15/2/2021</div>
+          <div style={{ fontSize: `${fs + 4}px`, fontWeight: "bold", marginBottom: "4px" }}>{sale.tipoComprobante}</div>
+          <div style={{ fontSize: `${fs + 2}px`, fontWeight: "bold", marginBottom: "4px" }}>N° {sale.numero}</div>
+          <div style={{ fontSize: `${fs - 2}px`, lineHeight: "1.6" }}>
+            <div>Fecha: {sale.fecha}</div>
+            <div>CUIT: {config.empresaCuit}</div>
+            <div>Ing.Brutos: {config.empresaIngrBrutos}</div>
+            <div>Cond.IVA: {config.empresaIva}</div>
+            <div>Inicio de Actividad: {config.empresaInicioAct}</div>
           </div>
         </div>
       </div>
       {/* Client */}
-      <div style={{ border: "1px solid #ccc", padding: "4px 6px", marginBottom: "4px", fontSize: "10px", lineHeight: "1.6" }}>
+      <div style={{ border: "1px solid #ccc", padding: "4px 6px", marginBottom: "4px", fontSize: `${fs - 1}px`, lineHeight: "1.7" }}>
         <div style={{ display: "flex", gap: "20px" }}>
-          <div style={{ flex: 1 }}>Cliente: {cliente?.numero_documento || ""} - {cliente?.nombre || "Consumidor Final"}</div>
-          <div>Tel.: {cliente?.telefono || ""}</div>
-          <div>Cond.Fiscal: {cliente?.situacion_iva || "Consumidor final"}</div>
+          <div style={{ flex: 1 }}><span>Cliente: {sale.cliente}</span></div>
+          <div><span>Forma de pago: {sale.formaPago}</span></div>
         </div>
-        <div style={{ display: "flex", gap: "20px" }}>
-          <div style={{ flex: 1 }}>Domicilio: {clienteDomicilio || "—"}</div>
-          <div>CUIT: {cliente?.cuit || ""}</div>
-        </div>
-        <div style={{ display: "flex", gap: "20px" }}>
-          <div style={{ flex: 1 }}>Forma de pago: {remito.forma_pago}</div>
-          <div>Moneda: {remito.moneda || "Peso"}</div>
-          <div>Vendedor: {vendedorNombre}</div>
-        </div>
+        {config.mostrarVendedor && sale.vendedor && (
+          <div><span>Vendedor: {sale.vendedor}</span></div>
+        )}
       </div>
       {/* Items */}
-      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "10px", flex: 1 }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: `${fs - 1}px`, flex: 1 }}>
         <thead>
           <tr style={{ borderBottom: "1px solid #000", borderTop: "1px solid #000" }}>
-            <th style={{ textAlign: "left", padding: "4px", fontWeight: "bold" }}>Cant.</th>
-            <th style={{ textAlign: "left", padding: "4px", fontWeight: "bold" }}>Producto</th>
-            <th style={{ textAlign: "center", padding: "4px", fontWeight: "bold" }}>U/Med</th>
-            <th style={{ textAlign: "right", padding: "4px", fontWeight: "bold" }}>Precio Un.</th>
-            <th style={{ textAlign: "right", padding: "4px", fontWeight: "bold" }}>Desc.%</th>
-            <th style={{ textAlign: "right", padding: "4px", fontWeight: "bold" }}>Importe</th>
+            <th style={{ textAlign: "left", padding: "4px 4px", fontWeight: "bold" }}>Cant.</th>
+            <th style={{ textAlign: "left", padding: "4px 4px", fontWeight: "bold" }}>Producto</th>
+            <th style={{ textAlign: "center", padding: "4px 4px", fontWeight: "bold" }}>U/Med</th>
+            <th style={{ textAlign: "right", padding: "4px 4px", fontWeight: "bold" }}>Precio Un.</th>
+            {config.mostrarDescuento && <th style={{ textAlign: "right", padding: "4px 4px", fontWeight: "bold" }}>Desc.%</th>}
+            <th style={{ textAlign: "right", padding: "4px 4px", fontWeight: "bold" }}>Importe</th>
           </tr>
         </thead>
         <tbody>
-          {items.map((item) => (
-            <tr key={item.id} style={{ borderBottom: "1px solid #eee" }}>
-              <td style={{ padding: "3px 4px" }}>{item.cantidad}</td>
-              <td style={{ padding: "3px 4px" }}>{item.descripcion}</td>
-              <td style={{ padding: "3px 4px", textAlign: "center" }}>{item.unidad_medida || "Un"}</td>
-              <td style={{ padding: "3px 4px", textAlign: "right" }}>{formatCurrencyPDF(item.precio_unitario)}</td>
-              <td style={{ padding: "3px 4px", textAlign: "right" }}>{item.descuento || 0}</td>
-              <td style={{ padding: "3px 4px", textAlign: "right" }}>{formatCurrencyPDF(item.subtotal)}</td>
+          {sale.items.map((item, i) => (
+            <tr key={i} style={{ borderBottom: "1px solid #eee" }}>
+              <td style={{ padding: "3px 4px", textAlign: "left" }}>{item.qty}</td>
+              <td style={{ padding: "3px 4px", textAlign: "left" }}>{item.description}</td>
+              <td style={{ padding: "3px 4px", textAlign: "center" }}>{item.unit || "Un"}</td>
+              <td style={{ padding: "3px 4px", textAlign: "right" }}>{fmtCur(item.price)}</td>
+              {config.mostrarDescuento && <td style={{ padding: "3px 4px", textAlign: "right" }}>{item.discount || 0}</td>}
+              <td style={{ padding: "3px 4px", textAlign: "right" }}>{fmtCur(item.subtotal)}</td>
             </tr>
           ))}
-          {items.length < 20 && Array.from({ length: 20 - items.length }).map((_, i) => (
-            <tr key={`e-${i}`}><td style={{ padding: "3px 4px" }}>&nbsp;</td><td /><td /><td /><td /><td /></tr>
+          {sale.items.length < 20 && Array.from({ length: 20 - sale.items.length }).map((_, i) => (
+            <tr key={`empty-${i}`}>
+              <td style={{ padding: "3px 4px" }}>&nbsp;</td>
+              <td /><td /><td />
+              {config.mostrarDescuento && <td />}
+              <td />
+            </tr>
           ))}
         </tbody>
       </table>
-      {/* Footer */}
+      {/* Footer totals */}
       <div style={{ borderTop: "2px solid #000", marginTop: "auto" }}>
-        <div style={{ display: "flex", fontSize: "9px", borderBottom: "1px solid #ccc", padding: "4px 0" }}>
-          <div style={{ flex: 1 }}>Subtotal</div>
-          <div style={{ width: "70px", textAlign: "right" }}>IVA 0%</div>
-          <div style={{ width: "70px", textAlign: "right" }}>IVA 10.5%</div>
-          <div style={{ width: "70px", textAlign: "right" }}>IVA 21%</div>
-          <div style={{ width: "70px", textAlign: "right" }}>Percep.IIBB</div>
-          <div style={{ width: "70px", textAlign: "right" }}>Descuento</div>
-          <div style={{ width: "70px", textAlign: "right" }}>C.F.T.%</div>
-          <div style={{ width: "120px", textAlign: "right", fontWeight: "bold", fontSize: "11px", background: "#e5e7eb", padding: "2px 6px" }}>Total</div>
+        <div style={{ display: "flex", justifyContent: "flex-end", padding: "6px 4px", fontSize: `${fs}px`, gap: "30px" }}>
+          <div><span>Subtotal: </span><span style={{ fontWeight: "bold" }}>{fmtCur(sale.subtotal)}</span></div>
+          {sale.descuento > 0 && <div><span>Descuento: </span><span style={{ fontWeight: "bold" }}>-{fmtCur(sale.descuento)}</span></div>}
+          {sale.recargo > 0 && <div><span>Recargo: </span><span style={{ fontWeight: "bold" }}>+{fmtCur(sale.recargo)}</span></div>}
         </div>
-        <div style={{ display: "flex", fontSize: "10px", padding: "4px 0", fontWeight: "bold" }}>
-          <div style={{ flex: 1 }}>{new Intl.NumberFormat("es-AR", { maximumFractionDigits: 0 }).format(remito.subtotal)}</div>
-          <div style={{ width: "70px" }} /><div style={{ width: "70px" }} /><div style={{ width: "70px" }} /><div style={{ width: "70px" }} /><div style={{ width: "70px" }} /><div style={{ width: "70px" }} />
-          <div style={{ width: "120px", textAlign: "right", fontSize: "14px", background: "#e5e7eb", padding: "2px 6px" }}>{formatCurrencyTotal(remito.total)}</div>
+        <div style={{ borderTop: "2px solid #000", display: "flex", justifyContent: "flex-end", padding: "8px 4px" }}>
+          <div style={{ fontSize: `${fs + 6}px`, fontWeight: "bold" }}>TOTAL: {fmtCur(sale.total)}</div>
+        </div>
+        {sale.formaPago === "Cuenta Corriente" && (
+          <div style={{ borderTop: "1px solid #ccc", padding: "6px 4px", fontSize: `${fs - 1}px` }}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontWeight: "bold" }}>
+              <span>Saldo actual:</span>
+              <span style={{ color: sale.saldoNuevo < 0 ? "#059669" : sale.saldoNuevo > 0 ? "#ea580c" : "#000" }}>
+                {sale.saldoNuevo < 0 ? `${fmtCur(Math.abs(sale.saldoNuevo))} (a favor)` : fmtCur(sale.saldoNuevo)}
+              </span>
+            </div>
+          </div>
+        )}
+        <div style={{ textAlign: "center", padding: "8px 0", fontSize: `${fs - 2}px`, borderTop: "1px solid #ccc" }}>
+          <div>{config.footerTexto}</div>
+          <div style={{ marginTop: "2px" }}>{sale.items.length} artículo{sale.items.length !== 1 ? "s" : ""}</div>
         </div>
       </div>
-      <div style={{ display: "flex", borderTop: "1px solid #ccc", padding: "4px 0", fontSize: "9px", marginTop: "4px" }}>
-        <div style={{ flex: 1 }}>Despacho:</div>
-        <div style={{ textAlign: "right" }}>{saldoLabel}</div>
-      </div>
-      {clienteSaldo > 0 && (
-        <div style={{ borderTop: "1px solid #e00", padding: "6px 0", fontSize: "10px", marginTop: "2px", color: "#c00", fontWeight: "bold" }}>
-          DEUDA DEL CLIENTE: {formatCurrencyTotal(clienteSaldo)}
-        </div>
-      )}
     </div>
   );
 }
@@ -660,12 +697,44 @@ export default function ListadoVentasPage() {
       {/* Hidden print area */}
       {printVenta && (
         <div style={{ position: "fixed", left: "-9999px", top: 0 }} ref={printRef}>
-          <RemitoPrintView
-            remito={printVenta}
-            items={printItems}
-            empresa={empresa}
-            vendedorNombre={getVendedorNombre(printVenta.vendedor_id)}
-            clienteSaldo={printClienteSaldo}
+          <ReceiptPrintView
+            config={{
+              ...defaultReceiptConfig,
+              empresaDomicilio: empresa?.domicilio || defaultReceiptConfig.empresaDomicilio,
+              empresaTelefono: empresa?.telefono || defaultReceiptConfig.empresaTelefono,
+              empresaCuit: empresa?.cuit || defaultReceiptConfig.empresaCuit,
+              empresaIva: empresa?.situacion_iva || defaultReceiptConfig.empresaIva,
+              empresaIngrBrutos: empresa?.cuit || defaultReceiptConfig.empresaIngrBrutos,
+            }}
+            sale={{
+              numero: printVenta.numero,
+              total: printVenta.total,
+              subtotal: printVenta.subtotal,
+              descuento: Math.round(printVenta.subtotal * (printVenta.descuento_porcentaje || 0) / 100),
+              recargo: Math.round(printVenta.subtotal * (printVenta.recargo_porcentaje || 0) / 100),
+              transferSurcharge: 0,
+              tipoComprobante: printVenta.tipo_comprobante,
+              formaPago: printVenta.forma_pago,
+              cliente: printVenta.clientes?.nombre || "Consumidor Final",
+              vendedor: getVendedorNombre(printVenta.vendedor_id),
+              fecha: formatDatePDF(printVenta.fecha),
+              saldoAnterior: printClienteSaldo,
+              saldoNuevo: printClienteSaldo,
+              items: printItems.map((item) => ({
+                id: item.id,
+                producto_id: item.producto_id || "",
+                code: item.codigo,
+                description: item.descripcion,
+                qty: item.cantidad,
+                unit: item.unidad_medida || "Un",
+                price: item.precio_unitario,
+                discount: item.descuento,
+                subtotal: item.subtotal,
+                presentacion: "",
+                unidades_por_presentacion: 1,
+                stock: 0,
+              })),
+            }}
           />
         </div>
       )}
