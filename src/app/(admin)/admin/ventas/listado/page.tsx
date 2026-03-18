@@ -35,6 +35,8 @@ import {
 } from "lucide-react";
 import type { Empresa } from "@/types/database";
 import Link from "next/link";
+import { ReceiptPrintView, defaultReceiptConfig } from "@/components/receipt-print-view";
+import type { ReceiptConfig, ReceiptLineItem } from "@/components/receipt-print-view";
 
 interface ClienteInfo {
   id: string;
@@ -92,265 +94,6 @@ function formatDatePDF(fecha: string) {
   return `${d.getDate()}/${d.getMonth() + 1}/${d.getFullYear()}`;
 }
 
-// ─── Receipt config (same as POS) ───
-interface ReceiptConfig {
-  logoUrl: string;
-  empresaNombre: string;
-  empresaWeb: string;
-  empresaDomicilio: string;
-  empresaTelefono: string;
-  empresaCuit: string;
-  empresaIva: string;
-  empresaInicioAct: string;
-  empresaIngrBrutos: string;
-  footerTexto: string;
-  fontSize: number;
-  logoHeight: number;
-  mostrarLogo: boolean;
-  mostrarVendedor: boolean;
-  mostrarDescuento: boolean;
-}
-
-const defaultReceiptConfig: ReceiptConfig = {
-  logoUrl: "https://www.dulcesur.com/assets/logotipo.png",
-  empresaNombre: "DULCE SUR",
-  empresaWeb: "www.dulcesur.com",
-  empresaDomicilio: "Francisco Canaro 4012",
-  empresaTelefono: "116299-1571",
-  empresaCuit: "20443387898",
-  empresaIva: "Monotributista Social",
-  empresaInicioAct: "15/2/2021",
-  empresaIngrBrutos: "20443387898",
-  footerTexto: "Gracias por su compra",
-  fontSize: 12,
-  logoHeight: 60,
-  mostrarLogo: true,
-  mostrarVendedor: true,
-  mostrarDescuento: true,
-};
-
-interface LineItem {
-  id: string;
-  producto_id: string;
-  code: string;
-  description: string;
-  qty: number;
-  unit: string;
-  price: number;
-  discount: number;
-  subtotal: number;
-  presentacion: string;
-  unidades_por_presentacion: number;
-  stock: number;
-  es_combo?: boolean;
-  comboItems?: { nombre: string; cantidad: number }[];
-}
-
-function ReceiptPrintView({
-  sale,
-  config,
-}: {
-  sale: {
-    numero: string; total: number; subtotal: number; descuento: number; recargo: number;
-    transferSurcharge: number; tipoComprobante: string; formaPago: string;
-    cliente: string; vendedor: string; items: LineItem[]; fecha: string;
-    saldoAnterior: number; saldoNuevo: number;
-  };
-  config: ReceiptConfig;
-}) {
-  const fs = config.fontSize;
-  const fmtCur = (v: number) =>
-    new Intl.NumberFormat("es-AR", { style: "currency", currency: "ARS", minimumFractionDigits: 0 }).format(v);
-
-  return (
-    <div
-      style={{
-        width: "210mm",
-        minHeight: "297mm",
-        padding: "8mm 10mm",
-        fontFamily: "Arial, Helvetica, sans-serif",
-        fontSize: `${fs}px`,
-        color: "#000",
-        background: "#fff",
-        display: "flex",
-        flexDirection: "column",
-      }}
-    >
-      {/* ── Header ── */}
-      <div style={{ display: "flex", borderBottom: "2px solid #000", paddingBottom: "6px", marginBottom: "4px" }}>
-        {/* Left: Logo & company */}
-        <div style={{ flex: 1 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "4px" }}>
-            {config.mostrarLogo && config.logoUrl && (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={config.logoUrl} alt="Logo" style={{ height: `${config.logoHeight}px` }} />
-            )}
-            {!config.mostrarLogo && (
-              <div style={{ fontSize: `${fs + 8}px`, fontWeight: "bold" }}>{config.empresaNombre}</div>
-            )}
-          </div>
-          <div style={{ fontSize: `${fs - 2}px`, lineHeight: "1.5" }}>
-            {config.empresaWeb && <div style={{ fontWeight: "bold" }}>{config.empresaWeb}</div>}
-            <div>{config.empresaDomicilio} | Tel: {config.empresaTelefono}</div>
-          </div>
-        </div>
-
-        {/* Center: X */}
-        <div style={{ width: "55px", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-start", borderLeft: "2px solid #000", borderRight: "2px solid #000", padding: "0 8px" }}>
-          <div style={{ fontSize: "30px", fontWeight: "bold", lineHeight: 1 }}>X</div>
-          <div style={{ fontSize: "8px", textAlign: "center", lineHeight: "1.2", marginTop: "2px" }}>Documento no válido como factura</div>
-        </div>
-
-        {/* Right: Number & fiscal data */}
-        <div style={{ flex: 1, paddingLeft: "10px" }}>
-          <div style={{ fontSize: `${fs + 4}px`, fontWeight: "bold", marginBottom: "4px" }}>
-            {sale.tipoComprobante}
-          </div>
-          <div style={{ fontSize: `${fs + 2}px`, fontWeight: "bold", marginBottom: "4px" }}>
-            N° {sale.numero}
-          </div>
-          <div style={{ fontSize: `${fs - 2}px`, lineHeight: "1.6" }}>
-            <div>Fecha: {sale.fecha}</div>
-            <div>CUIT: {config.empresaCuit}</div>
-            <div>Ing.Brutos: {config.empresaIngrBrutos}</div>
-            <div>Cond.IVA: {config.empresaIva}</div>
-            <div>Inicio de Actividad: {config.empresaInicioAct}</div>
-          </div>
-        </div>
-      </div>
-
-      {/* ── Client info ── */}
-      <div style={{ border: "1px solid #ccc", padding: "4px 6px", marginBottom: "4px", fontSize: `${fs - 1}px`, lineHeight: "1.7" }}>
-        <div style={{ display: "flex", gap: "20px" }}>
-          <div style={{ flex: 1 }}><span>Cliente: {sale.cliente}</span></div>
-          <div><span>Forma de pago: {sale.formaPago}</span></div>
-        </div>
-        {config.mostrarVendedor && sale.vendedor && (
-          <div><span>Vendedor: {sale.vendedor}</span></div>
-        )}
-      </div>
-
-      {/* ── Items table ── */}
-      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: `${fs - 1}px`, flex: 1 }}>
-        <thead>
-          <tr style={{ borderBottom: "1px solid #000", borderTop: "1px solid #000" }}>
-            <th style={{ textAlign: "left", padding: "4px 4px", fontWeight: "bold" }}>Cant.</th>
-            <th style={{ textAlign: "left", padding: "4px 4px", fontWeight: "bold" }}>Producto</th>
-            <th style={{ textAlign: "center", padding: "4px 4px", fontWeight: "bold" }}>U/Med</th>
-            <th style={{ textAlign: "right", padding: "4px 4px", fontWeight: "bold" }}>Precio Un.</th>
-            {config.mostrarDescuento && (
-              <th style={{ textAlign: "right", padding: "4px 4px", fontWeight: "bold" }}>Desc.%</th>
-            )}
-            <th style={{ textAlign: "right", padding: "4px 4px", fontWeight: "bold" }}>Importe</th>
-          </tr>
-        </thead>
-        <tbody>
-          {sale.items.map((item, i) => {
-            const totalComboUnits = item.es_combo && item.comboItems && item.comboItems.length > 0
-              ? item.comboItems.reduce((s, ci) => s + ci.cantidad, 0)
-              : 0;
-            const precioUnitario = item.es_combo && totalComboUnits > 0
-              ? item.price / totalComboUnits
-              : item.unit === "Mt" && item.unidades_por_presentacion < 1
-                ? item.price / item.unidades_por_presentacion
-                : item.price;
-            const cleanDescription = item.description
-              .replace(/\s*[-–]\s*Unidad(\s*\(Unidad\))?$/, "")
-              .replace(/\s*\(Unidad\)$/, "");
-            return (
-              <tr key={i} style={{ borderBottom: "1px solid #eee" }}>
-                <td style={{ padding: "3px 4px", textAlign: "left" }}>{item.unit === "Mt" && item.unidades_por_presentacion < 1 ? item.qty * item.unidades_por_presentacion : item.qty}</td>
-                <td style={{ padding: "3px 4px", textAlign: "left" }}>
-                  {item.es_combo && (
-                    <span style={{ fontSize: `${fs - 4}px`, fontWeight: "bold", background: "#000", color: "#fff", padding: "0px 2px", borderRadius: "2px", marginRight: "3px", letterSpacing: "0.5px" }}>COMBO</span>
-                  )}
-                  {cleanDescription}
-                  {item.es_combo && item.comboItems && item.comboItems.length > 0 && (
-                    <div style={{ fontSize: `${fs - 4}px`, color: "#777", marginTop: "0px", lineHeight: "1.1" }}>
-                      {item.comboItems.map((ci) => `${ci.nombre} x${ci.cantidad}`).join(" · ")}
-                    </div>
-                  )}
-                </td>
-                <td style={{ padding: "3px 4px", textAlign: "center" }}>
-                  {item.es_combo && totalComboUnits > 0 ? `x${totalComboUnits} un` : item.unit || "Un"}
-                </td>
-                <td style={{ padding: "3px 4px", textAlign: "right" }}>{fmtCur(precioUnitario)}</td>
-                {config.mostrarDescuento && (
-                  <td style={{ padding: "3px 4px", textAlign: "right" }}>{item.discount || 0}</td>
-                )}
-                <td style={{ padding: "3px 4px", textAlign: "right" }}>{fmtCur(item.subtotal)}</td>
-              </tr>
-            );
-          })}
-          {/* Empty rows to fill space */}
-          {sale.items.length < 20 &&
-            Array.from({ length: 20 - sale.items.length }).map((_, i) => (
-              <tr key={`empty-${i}`}>
-                <td style={{ padding: "3px 4px" }}>&nbsp;</td>
-                <td style={{ padding: "3px 4px" }}></td>
-                <td style={{ padding: "3px 4px" }}></td>
-                <td style={{ padding: "3px 4px" }}></td>
-                {config.mostrarDescuento && <td style={{ padding: "3px 4px" }}></td>}
-                <td style={{ padding: "3px 4px" }}></td>
-              </tr>
-            ))}
-        </tbody>
-      </table>
-
-      {/* ── Footer totals ── */}
-      <div style={{ borderTop: "2px solid #000", marginTop: "auto" }}>
-        <div style={{ display: "flex", justifyContent: "flex-end", padding: "6px 4px", fontSize: `${fs}px`, gap: "30px" }}>
-          <div>
-            <span>Subtotal: </span>
-            <span style={{ fontWeight: "bold" }}>{fmtCur(sale.subtotal)}</span>
-          </div>
-          {sale.descuento > 0 && (
-            <div>
-              <span>Descuento: </span>
-              <span style={{ fontWeight: "bold" }}>-{fmtCur(sale.descuento)}</span>
-            </div>
-          )}
-          {sale.recargo > 0 && (
-            <div>
-              <span>Recargo: </span>
-              <span style={{ fontWeight: "bold" }}>+{fmtCur(sale.recargo)}</span>
-            </div>
-          )}
-          {sale.transferSurcharge > 0 && (
-            <div>
-              <span>Rec. Transferencia: </span>
-              <span style={{ fontWeight: "bold" }}>+{fmtCur(sale.transferSurcharge)}</span>
-            </div>
-          )}
-        </div>
-        <div style={{ borderTop: "2px solid #000", display: "flex", justifyContent: "flex-end", padding: "8px 4px" }}>
-          <div style={{ fontSize: `${fs + 6}px`, fontWeight: "bold" }}>
-            TOTAL: {fmtCur(sale.total)}
-          </div>
-        </div>
-        {/* Saldo info for Cuenta Corriente */}
-        {(sale.formaPago === "Cuenta Corriente" || (sale.formaPago === "Mixto" && sale.saldoNuevo !== sale.saldoAnterior)) && (
-          <div style={{ borderTop: "1px solid #ccc", padding: "6px 4px", fontSize: `${fs - 1}px` }}>
-            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "2px" }}>
-              <span>Saldo anterior:</span>
-              <span>{sale.saldoAnterior < 0 ? `${fmtCur(Math.abs(sale.saldoAnterior))} (a favor)` : fmtCur(sale.saldoAnterior)}</span>
-            </div>
-            <div style={{ display: "flex", justifyContent: "space-between", fontWeight: "bold" }}>
-              <span>Saldo actual:</span>
-              <span style={{ color: sale.saldoNuevo < 0 ? "#059669" : sale.saldoNuevo > 0 ? "#ea580c" : "#000" }}>
-                {sale.saldoNuevo < 0 ? `${fmtCur(Math.abs(sale.saldoNuevo))} (a favor)` : fmtCur(sale.saldoNuevo)}
-              </span>
-            </div>
-          </div>
-        )}
-        <div style={{ textAlign: "center", padding: "8px 0", fontSize: `${fs - 2}px`, borderTop: "1px solid #ccc" }}>
-          <div>{config.footerTexto}</div>
-          <div style={{ marginTop: "2px" }}>{sale.items.length} artículo{sale.items.length !== 1 ? "s" : ""}</div>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 export default function ListadoVentasPage() {
   const [ventas, setVentas] = useState<VentaRow[]>([]);
@@ -382,6 +125,7 @@ export default function ListadoVentasPage() {
   const [vendedores, setVendedores] = useState<{ id: string; nombre: string }[]>([]);
   const [printVenta, setPrintVenta] = useState<VentaRow | null>(null);
   const [printItems, setPrintItems] = useState<VentaItemRow[]>([]);
+  const [printLineItems, setPrintLineItems] = useState<ReceiptLineItem[]>([]);
   const [printReady, setPrintReady] = useState(false);
   const [printClienteSaldo, setPrintClienteSaldo] = useState(0);
   const printRef = useRef<HTMLDivElement>(null);
@@ -453,14 +197,52 @@ export default function ListadoVentasPage() {
   // ─── Print ───
   const preparePrint = async (v: VentaRow) => {
     const { data } = await supabase.from("venta_items").select("*").eq("venta_id", v.id).order("created_at");
+    const items = (data as VentaItemRow[]) || [];
     let saldo = 0;
     if (v.cliente_id) {
       const { data: cd } = await supabase.from("clientes").select("saldo").eq("id", v.cliente_id).single();
       saldo = cd?.saldo || 0;
     }
+
+    // Load combo data for combo products
+    const productIds = items.map((i) => i.producto_id).filter(Boolean) as string[];
+    const comboItemsMap: Record<string, { nombre: string; cantidad: number }[]> = {};
+    const comboIds = new Set<string>();
+    if (productIds.length > 0) {
+      const { data: prods } = await supabase.from("productos").select("id, es_combo").in("id", productIds);
+      for (const p of prods || []) {
+        if ((p as any).es_combo) comboIds.add(p.id);
+      }
+      for (const comboId of comboIds) {
+        const { data: ciData } = await supabase
+          .from("combo_items")
+          .select("cantidad, productos!combo_items_producto_id_fkey(nombre)")
+          .eq("combo_id", comboId);
+        comboItemsMap[comboId] = (ciData || []).map((ci: any) => ({ nombre: ci.productos?.nombre || "", cantidad: ci.cantidad }));
+      }
+    }
+
+    const lineItems: ReceiptLineItem[] = items.map((item) => ({
+      id: item.id,
+      producto_id: item.producto_id || "",
+      code: item.codigo,
+      description: item.descripcion,
+      qty: item.cantidad,
+      unit: item.unidad_medida || "Un",
+      price: item.precio_unitario,
+      discount: item.descuento,
+      subtotal: item.subtotal,
+      presentacion: "",
+      unidades_por_presentacion: 1,
+      stock: 0,
+      es_combo: comboIds.has(item.producto_id || ""),
+      comboItems: comboItemsMap[item.producto_id || ""] || [],
+    }));
+
     setPrintClienteSaldo(saldo);
     setPrintVenta(v);
-    setPrintItems((data as VentaItemRow[]) || []);
+    setPrintItems(items);
+    setPrintLineItems(lineItems);
     setPrintReady(true);
   };
 
@@ -802,27 +584,16 @@ export default function ListadoVentasPage() {
               transferSurcharge: 0,
               tipoComprobante: printVenta.tipo_comprobante,
               formaPago: printVenta.forma_pago,
+              moneda: printVenta.moneda || "ARS",
               cliente: printVenta.clientes?.nombre || "Consumidor Final",
+              clienteDireccion: printVenta.clientes?.domicilio || null,
+              clienteTelefono: printVenta.clientes?.telefono || null,
+              clienteCondicionIva: printVenta.clientes?.situacion_iva || null,
               vendedor: getVendedorNombre(printVenta.vendedor_id),
               fecha: formatDatePDF(printVenta.fecha),
               saldoAnterior: printClienteSaldo,
               saldoNuevo: printClienteSaldo,
-              items: printItems.map((item) => ({
-                id: item.id,
-                producto_id: item.producto_id || "",
-                code: item.codigo,
-                description: item.descripcion,
-                qty: item.cantidad,
-                unit: item.unidad_medida || "Un",
-                price: item.precio_unitario,
-                discount: item.descuento,
-                subtotal: item.subtotal,
-                presentacion: "",
-                unidades_por_presentacion: 1,
-                stock: 0,
-                es_combo: false,
-                comboItems: [],
-              })),
+              items: printLineItems,
             }}
           />
         </div>
