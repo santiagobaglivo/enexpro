@@ -44,6 +44,10 @@ export default function PerfilPage() {
   const [saldo, setSaldo] = useState(0);
   const [saldoLoaded, setSaldoLoaded] = useState(false);
 
+  // Delivery zone
+  const [zonaNombre, setZonaNombre] = useState("");
+  const [diasEntrega, setDiasEntrega] = useState<string[]>([]);
+
   useEffect(() => {
     const stored = localStorage.getItem("cliente_auth");
     if (!stored) return;
@@ -65,7 +69,7 @@ export default function PerfilPage() {
           // Fetch client details
           const { data: cliente } = await supabase
             .from("clientes")
-            .select("tipo_documento, numero_documento, domicilio, provincia, localidad, codigo_postal, saldo")
+            .select("tipo_documento, numero_documento, domicilio, provincia, localidad, codigo_postal, saldo, zona_entrega, dias_entrega")
             .eq("id", data.cliente_id)
             .single();
           if (cliente) {
@@ -77,6 +81,12 @@ export default function PerfilPage() {
             setCodigoPostal(cliente.codigo_postal || "");
             setSaldo(cliente.saldo || 0);
             setSaldoLoaded(true);
+            setDiasEntrega(cliente.dias_entrega || []);
+            // Fetch zone name if set
+            if (cliente.zona_entrega) {
+              const { data: zona } = await supabase.from("zonas_entrega").select("nombre").eq("id", cliente.zona_entrega).single();
+              if (zona) setZonaNombre(zona.nombre);
+            }
           }
         }
       }
@@ -259,6 +269,32 @@ export default function PerfilPage() {
                 <p className={`text-xs font-medium ${saldo > 0 ? "text-orange-500" : saldo < 0 ? "text-emerald-500" : "text-gray-400"}`}>
                   {saldo > 0 ? "Deuda pendiente" : saldo < 0 ? "Saldo a favor" : "Al día"}
                 </p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Delivery zone */}
+        {diasEntrega.length > 0 && (
+          <div className="rounded-2xl border border-blue-200 bg-blue-50 overflow-hidden">
+            <div className="flex items-center gap-3 p-6">
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center bg-blue-100">
+                <MapPin className="w-5 h-5 text-blue-600" />
+              </div>
+              <div className="flex-1">
+                <h2 className="font-bold text-gray-900 text-lg">Zona de entrega</h2>
+                {zonaNombre && <p className="text-blue-700 text-sm font-medium">{zonaNombre}</p>}
+                <div className="flex flex-wrap gap-1.5 mt-2">
+                  {["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"].map((d, i) => {
+                    const fullDay = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"][i];
+                    const isActive = diasEntrega.includes(fullDay);
+                    return (
+                      <span key={d} className={`text-xs px-2.5 py-1 rounded-full font-medium ${isActive ? "bg-blue-600 text-white" : "bg-white text-gray-400 border border-gray-200"}`}>
+                        {d}
+                      </span>
+                    );
+                  })}
+                </div>
               </div>
             </div>
           </div>

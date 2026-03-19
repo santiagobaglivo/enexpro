@@ -209,11 +209,27 @@ export default function PedidosPage() {
 
       setPedidos(pedidosList);
 
-      // POS ventas that don't match any pedido
+      // Separate: ventas linked to pedidos stay with pedidos (web tab)
+      // Remaining ventas split by origen: "tienda" = web, else = local
       const pedidoNumeros = new Set(pedidosList.map((p) => p.numero));
-      const posOnly = Object.values(ventaRecords).filter(
+      const unlinkedVentas = Object.values(ventaRecords).filter(
         (v) => !pedidoNumeros.has(v.numero)
       );
+      // Web ventas without a pedido_tienda (e.g. older orders) go to web tab as extra pedidos
+      const webVentasExtra = unlinkedVentas.filter((v) => v.origen === "tienda");
+      const posOnly = unlinkedVentas.filter((v) => v.origen !== "tienda");
+
+      // Convert web ventas to pseudo-pedidos so they show in the web tab
+      const extraPedidos: Pedido[] = webVentasExtra.map((v) => ({
+        id: parseInt(v.id.replace(/\D/g, "").slice(0, 8)) || 0,
+        numero: v.numero,
+        created_at: v.fecha,
+        estado: "entregado",
+        total: v.total,
+        items: [],
+        venta: v,
+      }));
+      setPedidos([...pedidosList, ...extraPedidos].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()));
       setVentasPOS(posOnly);
 
       setLoading(false);
