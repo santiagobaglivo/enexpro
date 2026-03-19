@@ -239,7 +239,12 @@ export default function DescuentosPage() {
     if (editId) {
       await supabase.from("descuentos").update(payload).eq("id", editId);
     } else {
-      await supabase.from("descuentos").insert(payload);
+      const { error } = await supabase.from("descuentos").insert({ ...payload, activo: true });
+      if (error) {
+        console.error("Error creating descuento:", error);
+        setSaving(false);
+        return;
+      }
     }
     setSaving(false);
     setDialogOpen(false);

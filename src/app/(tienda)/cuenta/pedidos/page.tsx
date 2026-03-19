@@ -1,9 +1,15 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 import Link from "next/link";
-import { ArrowLeft, Package, ChevronDown, ChevronUp, Calendar, Hash, AlertCircle, ShoppingBag, DollarSign, Globe, Store } from "lucide-react";
+import { ArrowLeft, Package, ChevronDown, ChevronUp, ChevronRight, Calendar, Hash, AlertCircle, ShoppingBag, DollarSign, Globe, Store } from "lucide-react";
 import { supabase } from "@/lib/supabase";
+
+interface ComboComponent {
+  producto_id: string;
+  cantidad: number;
+  nombre: string;
+}
 
 interface PedidoItem {
   id: number;
@@ -13,6 +19,9 @@ interface PedidoItem {
   cantidad: number;
   precio_unitario: number;
   descuento?: number;
+  producto_id?: string;
+  es_combo?: boolean;
+  combo_items?: ComboComponent[];
 }
 
 interface NotaCredito {
@@ -40,7 +49,7 @@ interface VentaRecord {
   forma_pago: string;
   total: number;
   origen: string;
-  items: { descripcion: string; cantidad: number; precio_unitario: number; subtotal: number; presentacion?: string; unidades_por_presentacion?: number; descuento?: number }[];
+  items: { descripcion: string; cantidad: number; precio_unitario: number; subtotal: number; presentacion?: string; unidades_por_presentacion?: number; descuento?: number; producto_id?: string; es_combo?: boolean; combo_items?: ComboComponent[] }[];
   notas_credito: NotaCredito[];
   pagos: PagoDetalle[];
   saldo_pendiente: number;
@@ -75,7 +84,17 @@ export default function PedidosPage() {
   const [ventasPOS, setVentasPOS] = useState<VentaRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [expandedCombos, setExpandedCombos] = useState<Set<string>>(new Set());
   const [activeTab, setActiveTab] = useState<"web" | "local">("web");
+
+  const toggleCombo = (key: string) => {
+    setExpandedCombos((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
 
   useEffect(() => {
     const fetchData = async () => {
@@ -94,7 +113,7 @@ export default function PedidosPage() {
       // Fetch pedidos tienda
       const { data } = await supabase
         .from("pedidos_tienda")
-        .select("id, numero, created_at, estado, total, pedido_tienda_items(id, nombre, presentacion, cantidad, precio_unitario, unidades_por_presentacion)")
+        .select("id, numero, created_at, estado, total, pedido_tienda_items(id, nombre, presentacion, cantidad, precio_unitario, unidades_por_presentacion, producto_id)")
         .eq("cliente_auth_id", id)
         .order("created_at", { ascending: false });
 
@@ -103,7 +122,7 @@ export default function PedidosPage() {
       if (clienteId) {
         const { data: ventas } = await supabase
           .from("ventas")
-          .select("id, numero, tipo_comprobante, fecha, created_at, forma_pago, total, origen, venta_items(descripcion, cantidad, precio_unitario, subtotal, presentacion, unidades_por_presentacion, descuento)")
+          .select("id, numero, tipo_comprobante, fecha, created_at, forma_pago, total, origen, venta_items(descripcion, cantidad, precio_unitario, subtotal, presentacion, unidades_por_presentacion, descuento, producto_id)")
           .eq("cliente_id", clienteId)
           .not("tipo_comprobante", "ilike", "Nota de Crédito%")
           .not("tipo_comprobante", "ilike", "Nota de Débito%")
@@ -117,7 +136,7 @@ export default function PedidosPage() {
       if (ventaIds.length > 0) {
         const { data: ncs } = await supabase
           .from("ventas")
-          .select("id, numero, fecha, total, remito_origen_id, venta_items(descripcion, cantidad, precio_unitario, subtotal, presentacion, unidades_por_presentacion, descuento)")
+          .select("id, numero, fecha, total, remito_origen_id, venta_items(descripcion, cantidad, precio_unitario, subtotal, presentacion, unidades_por_presentacion, descuento, producto_id)")
           .in("remito_origen_id", ventaIds)
           .ilike("tipo_comprobante", "Nota de Crédito%");
         for (const nc of ncs || []) {
@@ -203,10 +222,62 @@ export default function PedidosPage() {
         };
       }
 
+      // Collect all producto_ids to check which are combos
+      const allProductoIds = new Set<string>();
+      for (const p of (data || [])) {
+        for (const item of (p as any).pedido_tienda_items || []) {
+          if (item.producto_id) allProductoIds.add(item.producto_id);
+        }
+      }
+      for (const v of Object.values(ventaRecords)) {
+        for (const item of v.items) {
+          if (item.producto_id) allProductoIds.add(item.producto_id);
+        }
+      }
+
+      // Fetch which products are combos
+      let comboMap: Record<string, ComboComponent[]> = {};
+      if (allProductoIds.size > 0) {
+        const { data: combos } = await supabase
+          .from("productos")
+          .select("id")
+          .eq("es_combo", true)
+          .in("id", Array.from(allProductoIds));
+        const comboIds = (combos || []).map((c: any) => c.id);
+        if (comboIds.length > 0) {
+          const { data: ci } = await supabase
+            .from("combo_items")
+            .select("combo_id, cantidad, productos!combo_items_producto_id_fkey(id, nombre)")
+            .in("combo_id", comboIds);
+          for (const item of ci || []) {
+            const key = (item as any).combo_id;
+            if (!comboMap[key]) comboMap[key] = [];
+            comboMap[key].push({
+              producto_id: (item as any).productos?.id || "",
+              cantidad: (item as any).cantidad,
+              nombre: (item as any).productos?.nombre || "",
+            });
+          }
+        }
+      }
+
+      // Enrich venta items with combo info
+      for (const v of Object.values(ventaRecords)) {
+        v.items = v.items.map((item) => ({
+          ...item,
+          es_combo: !!(item.producto_id && comboMap[item.producto_id]),
+          combo_items: item.producto_id ? comboMap[item.producto_id] || undefined : undefined,
+        }));
+      }
+
       // Map pedidos with their ventas
       const pedidosList: Pedido[] = (data || []).map((p: any) => ({
         ...p,
-        items: p.pedido_tienda_items || [],
+        items: ((p as any).pedido_tienda_items || []).map((item: any) => ({
+          ...item,
+          es_combo: !!(item.producto_id && comboMap[item.producto_id]),
+          combo_items: item.producto_id ? comboMap[item.producto_id] || undefined : undefined,
+        })),
         venta: ventaRecords[p.numero] || undefined,
       }));
 
@@ -367,6 +438,7 @@ export default function PedidosPage() {
                   <tr className="text-xs text-gray-400 uppercase tracking-wider">
                     <th className="py-3 text-left font-medium">Producto</th>
                     <th className="py-3 text-center font-medium">Cant.</th>
+                    <th className="py-3 text-center font-medium">Desc%</th>
                     <th className="py-3 text-right font-medium">Precio</th>
                     <th className="py-3 text-right font-medium">Subtotal</th>
                   </tr>
@@ -380,6 +452,8 @@ export default function PedidosPage() {
                     cantidad: item.cantidad,
                     precio_unitario: item.precio_unitario,
                     descuento: item.descuento || 0,
+                    es_combo: item.es_combo,
+                    combo_items: item.combo_items,
                   })) : (pedido.venta?.items || []).map((item, idx) => ({
                     id: idx,
                     nombre: item.descripcion,
@@ -388,10 +462,12 @@ export default function PedidosPage() {
                     cantidad: item.cantidad,
                     precio_unitario: item.precio_unitario,
                     descuento: item.descuento || 0,
+                    es_combo: item.es_combo,
+                    combo_items: item.combo_items,
                   }))).map((item) => {
                     const isMedio = item.presentacion && (item.presentacion.toLowerCase().includes("medio") || (item.unidades_por_presentacion != null && item.unidades_por_presentacion <= 0.5 && item.unidades_por_presentacion > 0));
                     const isBox = item.presentacion && item.presentacion !== "Unidad" && (item.unidades_por_presentacion || 1) > 1;
-                    const isCombo = item.nombre.toLowerCase().includes("combo");
+                    const isCombo = item.nombre.toLowerCase().includes("combo") || item.es_combo;
                     const unitPrice = isMedio ? item.precio_unitario / (item.unidades_por_presentacion || 0.5) : isBox ? item.precio_unitario / (item.unidades_por_presentacion || 1) : item.precio_unitario;
                     let displayName = item.nombre
                       .replace(/\s*[-–]\s*Unidad(\s*\(Unidad\))?$/, "")
@@ -404,22 +480,39 @@ export default function PedidosPage() {
                       const presClean = item.presentacion.replace(/\s*\([^)]*\)\s*$/, "");
                       displayName = `${displayName} (${presClean})`;
                     }
+                    const comboKey = `pedido-${pedido.id}-item-${item.id}`;
+                    const hasComboDetail = item.es_combo && item.combo_items && item.combo_items.length > 0;
+                    const isComboExpanded = expandedCombos.has(comboKey);
                     return (
-                    <tr key={item.id} className="border-t border-gray-50">
+                    <React.Fragment key={item.id}>
+                    <tr className="border-t border-gray-50">
                       <td className="py-3 text-gray-700 font-medium">
-                        {displayName}
-                        {isCombo && (item.unidades_por_presentacion || 1) > 1 && (
-                          <span className="block text-[10px] text-gray-400 mt-0.5">
-                            Combo de {item.unidades_por_presentacion} unidades
-                          </span>
-                        )}
-                        {item.descuento != null && item.descuento > 0 && (
-                          <span className="block text-[10px] text-emerald-600 mt-0.5">
-                            {item.descuento}% dto.
-                          </span>
-                        )}
+                        <div className="flex items-center gap-1.5">
+                          {hasComboDetail && (
+                            <button onClick={() => toggleCombo(comboKey)} className="shrink-0 w-5 h-5 flex items-center justify-center rounded hover:bg-gray-100 transition-colors">
+                              {isComboExpanded ? <ChevronDown className="w-3.5 h-3.5 text-pink-500" /> : <ChevronRight className="w-3.5 h-3.5 text-gray-400" />}
+                            </button>
+                          )}
+                          <div>
+                            {displayName}
+                            {isCombo && !hasComboDetail && (item.unidades_por_presentacion || 1) > 1 && (
+                              <span className="block text-[10px] text-gray-400 mt-0.5">
+                                Combo de {item.unidades_por_presentacion} unidades
+                              </span>
+                            )}
+                          </div>
+                        </div>
                       </td>
                       <td className="py-3 text-center text-gray-500">{isMedio ? item.cantidad * (item.unidades_por_presentacion || 0.5) : item.cantidad}</td>
+                      <td className="py-3 text-center text-gray-500">
+                        {item.descuento != null && item.descuento > 0 ? (
+                          <span className="inline-flex items-center px-1.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 text-xs font-medium">
+                            {item.descuento}%
+                          </span>
+                        ) : (
+                          <span className="text-gray-300">—</span>
+                        )}
+                      </td>
                       <td className="py-3 text-right text-gray-500">
                         {formatPrice(unitPrice)}
                         {(isBox || isCombo) && (item.unidades_por_presentacion || 1) > 1 && <span className="block text-[10px] text-gray-400">c/u</span>}
@@ -428,12 +521,27 @@ export default function PedidosPage() {
                         {formatPrice(item.precio_unitario * item.cantidad)}
                       </td>
                     </tr>
+                    {hasComboDetail && isComboExpanded && item.combo_items!.map((ci, ciIdx) => (
+                      <tr key={`${item.id}-ci-${ciIdx}`} className="bg-gray-50/50">
+                        <td className="py-2 pl-10 text-gray-500 text-xs">
+                          <span className="inline-flex items-center gap-1">
+                            <span className="w-1 h-1 rounded-full bg-gray-300" />
+                            {ci.nombre}
+                          </span>
+                        </td>
+                        <td className="py-2 text-center text-gray-400 text-xs">{ci.cantidad * item.cantidad}</td>
+                        <td className="py-2" />
+                        <td className="py-2" />
+                        <td className="py-2" />
+                      </tr>
+                    ))}
+                    </React.Fragment>
                     );
                   })}
                 </tbody>
                 <tfoot>
                   <tr className="border-t border-gray-200">
-                    <td colSpan={3} className="py-3 text-right font-semibold text-gray-500 text-xs uppercase tracking-wider">
+                    <td colSpan={4} className="py-3 text-right font-semibold text-gray-500 text-xs uppercase tracking-wider">
                       Total
                     </td>
                     <td className="py-3 text-right font-bold text-pink-600 text-base">
@@ -608,6 +716,7 @@ export default function PedidosPage() {
                   <tr className="text-xs text-gray-400 uppercase tracking-wider">
                     <th className="py-3 text-left font-medium">Producto</th>
                     <th className="py-3 text-center font-medium">Cant.</th>
+                    <th className="py-3 text-center font-medium">Desc%</th>
                     <th className="py-3 text-right font-medium">Precio</th>
                     <th className="py-3 text-right font-medium">Subtotal</th>
                   </tr>
@@ -616,7 +725,7 @@ export default function PedidosPage() {
                   {v.items.map((item, idx) => {
                     const isMedioV = item.presentacion && (item.presentacion.toLowerCase().includes("medio") || (item.unidades_por_presentacion != null && item.unidades_por_presentacion <= 0.5 && item.unidades_por_presentacion > 0));
                     const isBox = item.presentacion && item.presentacion !== "Unidad" && (item.unidades_por_presentacion || 1) > 1;
-                    const isCombo = (item.descripcion || "").toLowerCase().includes("combo");
+                    const isCombo = (item.descripcion || "").toLowerCase().includes("combo") || item.es_combo;
                     const unitPrice = isMedioV ? item.precio_unitario / (item.unidades_por_presentacion || 0.5) : isBox ? item.precio_unitario / (item.unidades_por_presentacion || 1) : item.precio_unitario;
                     const displayName = (item.descripcion || "")
                       .replace(/\s*[-–]\s*Unidad(\s*\(Unidad\))?$/, "")
@@ -625,34 +734,66 @@ export default function PedidosPage() {
                       .replace(/\s*\(Caja \(x[\d.]+\)\)$/, "")
                       .replace(/Caja\s*\(?x?0\.5\)?/gi, "Medio Cartón")
                       .replace(/(Medio\s*Cart[oó]n)\s*\(?\s*Medio\s*Cart[oó]n\s*\)?/gi, "$1");
+                    const comboKey = `venta-${v.id}-item-${idx}`;
+                    const hasComboDetail = item.es_combo && item.combo_items && item.combo_items.length > 0;
+                    const isComboExpanded = expandedCombos.has(comboKey);
                     return (
-                    <tr key={idx} className="border-t border-gray-50">
+                    <React.Fragment key={idx}>
+                    <tr className="border-t border-gray-50">
                       <td className="py-3 text-gray-700 font-medium">
-                        {displayName}
-                        {isCombo && (item.unidades_por_presentacion || 1) > 1 && (
-                          <span className="block text-[10px] text-gray-400 mt-0.5">
-                            Combo de {item.unidades_por_presentacion} unidades
-                          </span>
-                        )}
-                        {item.descuento != null && item.descuento > 0 && (
-                          <span className="block text-[10px] text-emerald-600 mt-0.5">
-                            {item.descuento}% dto.
-                          </span>
-                        )}
+                        <div className="flex items-center gap-1.5">
+                          {hasComboDetail && (
+                            <button onClick={() => toggleCombo(comboKey)} className="shrink-0 w-5 h-5 flex items-center justify-center rounded hover:bg-gray-100 transition-colors">
+                              {isComboExpanded ? <ChevronDown className="w-3.5 h-3.5 text-indigo-500" /> : <ChevronRight className="w-3.5 h-3.5 text-gray-400" />}
+                            </button>
+                          )}
+                          <div>
+                            {displayName}
+                            {isCombo && !hasComboDetail && (item.unidades_por_presentacion || 1) > 1 && (
+                              <span className="block text-[10px] text-gray-400 mt-0.5">
+                                Combo de {item.unidades_por_presentacion} unidades
+                              </span>
+                            )}
+                          </div>
+                        </div>
                       </td>
                       <td className="py-3 text-center text-gray-500">{isMedioV ? item.cantidad * (item.unidades_por_presentacion || 0.5) : item.cantidad}</td>
+                      <td className="py-3 text-center text-gray-500">
+                        {item.descuento != null && item.descuento > 0 ? (
+                          <span className="inline-flex items-center px-1.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 text-xs font-medium">
+                            {item.descuento}%
+                          </span>
+                        ) : (
+                          <span className="text-gray-300">—</span>
+                        )}
+                      </td>
                       <td className="py-3 text-right text-gray-500">
                         {formatPrice(unitPrice)}
                         {(isBox || isCombo) && (item.unidades_por_presentacion || 1) > 1 && <span className="block text-[10px] text-gray-400">c/u</span>}
                       </td>
                       <td className="py-3 text-right font-semibold text-gray-900">{formatPrice(item.subtotal)}</td>
                     </tr>
+                    {hasComboDetail && isComboExpanded && item.combo_items!.map((ci, ciIdx) => (
+                      <tr key={`${idx}-ci-${ciIdx}`} className="bg-gray-50/50">
+                        <td className="py-2 pl-10 text-gray-500 text-xs">
+                          <span className="inline-flex items-center gap-1">
+                            <span className="w-1 h-1 rounded-full bg-gray-300" />
+                            {ci.nombre}
+                          </span>
+                        </td>
+                        <td className="py-2 text-center text-gray-400 text-xs">{ci.cantidad * item.cantidad}</td>
+                        <td className="py-2" />
+                        <td className="py-2" />
+                        <td className="py-2" />
+                      </tr>
+                    ))}
+                    </React.Fragment>
                     );
                   })}
                 </tbody>
                 <tfoot>
                   <tr className="border-t border-gray-200">
-                    <td colSpan={3} className="py-3 text-right font-semibold text-gray-500 text-xs uppercase tracking-wider">Total</td>
+                    <td colSpan={4} className="py-3 text-right font-semibold text-gray-500 text-xs uppercase tracking-wider">Total</td>
                     <td className="py-3 text-right font-bold text-indigo-600 text-base">{formatPrice(v.total)}</td>
                   </tr>
                 </tfoot>

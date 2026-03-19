@@ -12,12 +12,13 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogDescription,
 } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
-import { Plus, Pencil, Trash2, Tag, Package, Loader2, FolderTree, Layers } from "lucide-react";
+import { Plus, Pencil, Trash2, Tag, Package, Loader2, FolderTree, Layers, AlertTriangle, ArrowRightLeft } from "lucide-react";
 
 // ─── Shared modules ───
 import { useAsyncData } from "@/hooks/use-async-data";
@@ -27,6 +28,7 @@ import { StatCard } from "@/components/stat-card";
 import { SearchInput } from "@/components/search-input";
 import { LoadingSpinner } from "@/components/loading-spinner";
 import { EmptyState } from "@/components/empty-state";
+import { showAdminToast } from "@/components/admin-toast";
 
 interface Marca {
   id: string;
@@ -51,6 +53,20 @@ interface Subcategoria {
   producto_count: number;
 }
 
+interface ProductoAsociado {
+  id: string;
+  nombre: string;
+  codigo?: string;
+}
+
+interface DeleteConfirm {
+  type: "marca" | "categoria" | "subcategoria";
+  id: string;
+  nombre: string;
+  productos: ProductoAsociado[];
+  reassignTo: string;
+}
+
 export default function MarcasPage() {
   const [activeTab, setActiveTab] = useState("marcas");
   const [search, setSearch] = useState("");
@@ -68,6 +84,12 @@ export default function MarcasPage() {
   const [editingSub, setEditingSub] = useState<Subcategoria | null>(null);
   const [subNombre, setSubNombre] = useState("");
   const [subCatId, setSubCatId] = useState("");
+
+  // Delete confirmation dialog
+  const [deleteConfirm, setDeleteConfirm] = useState<DeleteConfirm | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  // Simple delete (no products)
+  const [simpleDelete, setSimpleDelete] = useState<{ type: string; id: string; nombre: string } | null>(null);
 
   const editDialog = useDialog<MarcaConConteo>();
 
@@ -109,6 +131,7 @@ export default function MarcasPage() {
     }
     setSaving(false);
     editDialog.onClose();
+    showAdminToast(editDialog.data ? "Marca actualizada" : "Marca creada", "success");
     refetch();
   };
 
@@ -116,12 +139,98 @@ export default function MarcasPage() {
     const marca = marcas.find((m) => m.id === id);
     if (!marca) return;
     if (marca.producto_count > 0) {
-      alert(`No se puede eliminar "${marca.nombre}" porque tiene ${marca.producto_count} producto(s) asociado(s).`);
+      // Fetch associated products
+      const { data: prods } = await supabase
+        .from("productos")
+        .select("id, nombre, codigo")
+        .eq("marca_id", id);
+      setDeleteConfirm({
+        type: "marca",
+        id,
+        nombre: marca.nombre,
+        productos: prods || [],
+        reassignTo: "",
+      });
       return;
     }
-    if (!confirm(`¿Eliminar la marca "${marca.nombre}"?`)) return;
-    await supabase.from("marcas").delete().eq("id", id);
-    refetch();
+    setSimpleDelete({ type: "marca", id, nombre: marca.nombre });
+  };
+
+  const confirmSimpleDelete = async () => {
+    if (!simpleDelete) return;
+    setDeleting(true);
+    const { type, id } = simpleDelete;
+    if (type === "marca") {
+      await supabase.from("marcas").delete().eq("id", id);
+      refetch();
+    } else if (type === "categoria") {
+      await supabase.from("categorias").delete().eq("id", id);
+      fetchCategorias();
+    } else if (type === "subcategoria") {
+      await supabase.from("subcategorias").delete().eq("id", id);
+      fetchCategorias();
+    }
+    showAdminToast(`${type === "marca" ? "Marca" : type === "categoria" ? "Categoría" : "Subcategoría"} eliminada`, "success");
+    setDeleting(false);
+    setSimpleDelete(null);
+  };
+
+  const confirmReassignAndDelete = async () => {
+    if (!deleteConfirm) return;
+    setDeleting(true);
+    try {
+      const { type, id, reassignTo } = deleteConfirm;
+
+      if (type === "marca") {
+        await supabase
+          .from("productos")
+          .update({ marca_id: reassignTo || null })
+          .eq("marca_id", id);
+        await supabase.from("marcas").delete().eq("id", id);
+        refetch();
+      } else if (type === "categoria") {
+        // Reassign products
+        await supabase
+          .from("productos")
+          .update({ categoria_id: reassignTo || null })
+          .eq("categoria_id", id);
+        // Also move subcategorias to the new category or delete them
+        if (reassignTo) {
+          await supabase
+            .from("subcategorias")
+            .update({ categoria_id: reassignTo })
+            .eq("categoria_id", id);
+        } else {
+          // Unlink subcategorias' products too
+          const { data: subs } = await supabase.from("subcategorias").select("id").eq("categoria_id", id);
+          if (subs && subs.length > 0) {
+            const subIds = subs.map((s: any) => s.id);
+            await supabase.from("productos").update({ subcategoria_id: null }).in("subcategoria_id", subIds);
+          }
+          await supabase.from("subcategorias").delete().eq("categoria_id", id);
+        }
+        await supabase.from("categorias").delete().eq("id", id);
+        fetchCategorias();
+      } else if (type === "subcategoria") {
+        await supabase
+          .from("productos")
+          .update({ subcategoria_id: reassignTo || null })
+          .eq("subcategoria_id", id);
+        await supabase.from("subcategorias").delete().eq("id", id);
+        fetchCategorias();
+      }
+
+      showAdminToast(
+        reassignTo
+          ? `Productos reasignados y ${type === "marca" ? "marca" : type === "categoria" ? "categoría" : "subcategoría"} eliminada`
+          : `${type === "marca" ? "Marca" : type === "categoria" ? "Categoría" : "Subcategoría"} eliminada (productos sin asignar)`,
+        "success"
+      );
+    } catch (err: any) {
+      showAdminToast("Error al eliminar: " + (err.message || "Error desconocido"), "error");
+    }
+    setDeleting(false);
+    setDeleteConfirm(null);
   };
 
   // ─── Categories fetch ───
@@ -159,15 +268,28 @@ export default function MarcasPage() {
     setCatDialogOpen(false);
     setEditingCat(null);
     setCatNombre("");
+    showAdminToast(editingCat ? "Categoría actualizada" : "Categoría creada", "success");
     fetchCategorias();
   };
 
   const handleDeleteCat = async (id: string) => {
     const cat = categorias.find((c) => c.id === id);
-    if (cat && cat.producto_count > 0) { alert(`No se puede eliminar "${cat.nombre}" porque tiene productos asociados.`); return; }
-    if (!confirm(`¿Eliminar la categoría "${cat?.nombre}"?`)) return;
-    await supabase.from("categorias").delete().eq("id", id);
-    fetchCategorias();
+    if (!cat) return;
+    if (cat.producto_count > 0) {
+      const { data: prods } = await supabase
+        .from("productos")
+        .select("id, nombre, codigo")
+        .eq("categoria_id", id);
+      setDeleteConfirm({
+        type: "categoria",
+        id,
+        nombre: cat.nombre,
+        productos: prods || [],
+        reassignTo: "",
+      });
+      return;
+    }
+    setSimpleDelete({ type: "categoria", id, nombre: cat.nombre });
   };
 
   const handleSaveSub = async () => {
@@ -183,21 +305,43 @@ export default function MarcasPage() {
     setEditingSub(null);
     setSubNombre("");
     setSubCatId("");
+    showAdminToast(editingSub ? "Subcategoría actualizada" : "Subcategoría creada", "success");
     fetchCategorias();
   };
 
   const handleDeleteSub = async (id: string) => {
     const sub = subcategorias.find((s) => s.id === id);
-    if (sub && sub.producto_count > 0) { alert(`No se puede eliminar "${sub.nombre}" porque tiene productos asociados.`); return; }
-    if (!confirm(`¿Eliminar la subcategoría "${sub?.nombre}"?`)) return;
-    await supabase.from("subcategorias").delete().eq("id", id);
-    fetchCategorias();
+    if (!sub) return;
+    if (sub.producto_count > 0) {
+      const { data: prods } = await supabase
+        .from("productos")
+        .select("id, nombre, codigo")
+        .eq("subcategoria_id", id);
+      setDeleteConfirm({
+        type: "subcategoria",
+        id,
+        nombre: sub.nombre,
+        productos: prods || [],
+        reassignTo: "",
+      });
+      return;
+    }
+    setSimpleDelete({ type: "subcategoria", id, nombre: sub.nombre });
   };
 
   // ─── Derived ───
   const filtered = marcas.filter((m) => m.nombre.toLowerCase().includes(search.toLowerCase()));
   const filteredCats = categorias.filter((c) => c.nombre.toLowerCase().includes(search.toLowerCase()));
   const filteredSubs = subcategorias.filter((s) => s.nombre.toLowerCase().includes(search.toLowerCase()) || (s.categoria_nombre || "").toLowerCase().includes(search.toLowerCase()));
+
+  // Options for reassignment selects (exclude the one being deleted)
+  const reassignOptions = () => {
+    if (!deleteConfirm) return [];
+    if (deleteConfirm.type === "marca") return marcas.filter((m) => m.id !== deleteConfirm.id);
+    if (deleteConfirm.type === "categoria") return categorias.filter((c) => c.id !== deleteConfirm.id);
+    if (deleteConfirm.type === "subcategoria") return subcategorias.filter((s) => s.id !== deleteConfirm.id);
+    return [];
+  };
 
   return (
     <div className="p-6 space-y-6">
@@ -405,6 +549,94 @@ export default function MarcasPage() {
               <Button onClick={handleSaveSub} disabled={saving || !subNombre.trim() || !subCatId}>
                 {saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
                 {editingSub ? "Guardar" : "Crear"}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Simple Delete Confirmation Dialog */}
+      <Dialog open={!!simpleDelete} onOpenChange={(open) => { if (!open) setSimpleDelete(null); }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Trash2 className="w-5 h-5 text-red-500" />
+              Confirmar eliminación
+            </DialogTitle>
+            <DialogDescription>
+              Esta acción no se puede deshacer.
+            </DialogDescription>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground py-2">
+            ¿Eliminar <span className="font-semibold text-foreground">&quot;{simpleDelete?.nombre}&quot;</span>?
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" onClick={() => setSimpleDelete(null)} disabled={deleting}>Cancelar</Button>
+            <Button variant="destructive" onClick={confirmSimpleDelete} disabled={deleting}>
+              {deleting && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+              Eliminar
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete with Reassignment Dialog */}
+      <Dialog open={!!deleteConfirm} onOpenChange={(open) => { if (!open) setDeleteConfirm(null); }}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="w-5 h-5 text-amber-500" />
+              {deleteConfirm?.type === "marca" ? "Marca" : deleteConfirm?.type === "categoria" ? "Categoría" : "Subcategoría"} con productos asociados
+            </DialogTitle>
+            <DialogDescription>
+              Antes de eliminar, podés reasignar los productos a otra {deleteConfirm?.type === "marca" ? "marca" : deleteConfirm?.type === "categoria" ? "categoría" : "subcategoría"}.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-2">
+            {/* Product list */}
+            <div>
+              <p className="text-sm font-medium mb-2">
+                {deleteConfirm?.productos.length} producto{(deleteConfirm?.productos.length || 0) !== 1 ? "s" : ""} asociado{(deleteConfirm?.productos.length || 0) !== 1 ? "s" : ""} a &quot;{deleteConfirm?.nombre}&quot;:
+              </p>
+              <div className="max-h-40 overflow-y-auto rounded-lg border bg-muted/30 p-2 space-y-1">
+                {deleteConfirm?.productos.map((p) => (
+                  <div key={p.id} className="flex items-center gap-2 text-sm px-2 py-1.5 rounded hover:bg-muted/50">
+                    <Package className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+                    <span className="truncate">{p.nombre}</span>
+                    {p.codigo && <span className="text-xs text-muted-foreground shrink-0">({p.codigo})</span>}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Reassignment select */}
+            <div className="space-y-2">
+              <Label className="flex items-center gap-1.5">
+                <ArrowRightLeft className="w-3.5 h-3.5" />
+                Reasignar productos a:
+              </Label>
+              <Select
+                value={deleteConfirm?.reassignTo || "__none__"}
+                onValueChange={(v) => setDeleteConfirm((prev) => prev ? { ...prev, reassignTo: v === "__none__" ? "" : (v || "") } : null)}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Seleccionar destino (opcional)" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">Sin asignar (quitar {deleteConfirm?.type === "marca" ? "marca" : deleteConfirm?.type === "categoria" ? "categoría" : "subcategoría"})</SelectItem>
+                  {reassignOptions().map((opt: any) => (
+                    <SelectItem key={opt.id} value={opt.id}>{opt.nombre}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="ghost" onClick={() => setDeleteConfirm(null)} disabled={deleting}>Cancelar</Button>
+              <Button variant="destructive" onClick={confirmReassignAndDelete} disabled={deleting}>
+                {deleting && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+                {deleteConfirm?.reassignTo ? "Reasignar y eliminar" : "Eliminar sin reasignar"}
               </Button>
             </div>
           </div>

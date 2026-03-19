@@ -400,7 +400,7 @@ export default function TiendaConfigPage() {
                       </div>
                       <div className="flex-1 space-y-2">
                         <Label className="text-xs text-muted-foreground font-normal">
-                          Monto mínimo de pedido
+                          Monto mínimo para retiro en local
                         </Label>
                         <Input
                           type="number"
@@ -428,7 +428,7 @@ export default function TiendaConfigPage() {
                       </div>
                       <div className="flex-1 space-y-2">
                         <Label className="text-xs text-muted-foreground font-normal">
-                          Umbral envío gratis
+                          Monto mínimo de compra para envíos
                         </Label>
                         <Input
                           type="number"

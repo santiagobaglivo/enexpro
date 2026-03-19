@@ -47,9 +47,11 @@ import {
   Settings,
   Layers,
   ChevronDown,
+  Copy,
 } from "lucide-react";
 import * as XLSX from "xlsx";
 import { ImageUpload } from "@/components/image-upload";
+import { showAdminToast } from "@/components/admin-toast";
 
 function formatCurrency(value: number) {
   return new Intl.NumberFormat("es-AR", {
@@ -582,15 +584,118 @@ export default function ProductosPage() {
       setDialogOpen(false);
       resetForm();
       fetchProducts();
+      showAdminToast("Producto guardado correctamente", "success");
+    } catch (err: any) {
+      showAdminToast(err.message || "Error al guardar producto", "error");
     } finally {
       setSaving(false);
     }
   };
 
   const handleDelete = async (id: string) => {
-    await supabase.from("combo_items").delete().eq("combo_id", id);
-    await supabase.from("productos").update({ activo: false }).eq("id", id);
-    fetchProducts();
+    const product = products.find((p) => p.id === id);
+    if (!product) return;
+    const isInactive = product.activo === false;
+    const msg = isInactive
+      ? "Este producto esta inactivo. ¿Deseas eliminarlo permanentemente?"
+      : "¿Estas seguro de eliminar este producto? Se marcara como inactivo.";
+    if (!window.confirm(msg)) return;
+
+    try {
+      if (isInactive) {
+        // Actually delete inactive products
+        await supabase.from("combo_items").delete().eq("combo_id", id);
+        await supabase.from("presentaciones").delete().eq("producto_id", id);
+        await supabase.from("producto_proveedores").delete().eq("producto_id", id);
+        const { error } = await supabase.from("productos").delete().eq("id", id);
+        if (error) throw error;
+        showAdminToast("Producto eliminado permanentemente", "success");
+      } else {
+        await supabase.from("combo_items").delete().eq("combo_id", id);
+        const { error } = await supabase.from("productos").update({ activo: false }).eq("id", id);
+        if (error) throw error;
+        showAdminToast("Producto desactivado correctamente", "success");
+      }
+      fetchProducts();
+    } catch (err: any) {
+      showAdminToast(err.message || "Error al eliminar producto", "error");
+    }
+  };
+
+  const handleDuplicate = async (p: ProductoWithRelations) => {
+    // Open edit dialog pre-filled with duplicated data
+    setEditingProduct(null); // null = new product mode
+    const newCode = `${p.codigo}-COPIA`;
+    setForm({
+      codigo: newCode,
+      nombre: `${p.nombre} (Copia)`,
+      categoria_id: p.categoria_id || "",
+      subcategoria_id: p.subcategoria_id || "",
+      marca_id: p.marca_id || "",
+      stock: 0,
+      stock_minimo: p.stock_minimo ?? 0,
+      stock_maximo: p.stock_maximo ?? 0,
+      precio: p.precio,
+      costo: p.costo,
+      unidad_medida: p.unidad_medida,
+      descripcion_detallada: p.descripcion_detallada || "",
+      visibilidad: p.visibilidad || "visible",
+      imagen_url: p.imagen_url || "",
+    });
+    setShowDescription(!!(p.descripcion_detallada));
+
+    // Load proveedores
+    const { data: provData } = await supabase
+      .from("producto_proveedores")
+      .select("proveedor_id")
+      .eq("producto_id", p.id);
+    setSelectedProveedores((provData || []).map((pp) => pp.proveedor_id));
+
+    // Load presentaciones (without IDs so they get inserted as new)
+    const { data: presData } = await supabase
+      .from("presentaciones")
+      .select("nombre, cantidad, sku, costo, precio, precio_oferta")
+      .eq("producto_id", p.id)
+      .order("cantidad");
+    const loadedPres = (presData || []).map((pr: any) => ({
+      nombre: pr.nombre,
+      cantidad: pr.cantidad,
+      sku: pr.cantidad === 1 ? newCode : "",
+      costo: pr.costo,
+      precio: pr.precio,
+      precio_oferta: pr.precio_oferta,
+    })) as Presentacion[];
+    if (!loadedPres.some((pr) => pr.cantidad === 1)) {
+      loadedPres.unshift({
+        nombre: "Unidad",
+        cantidad: 1,
+        sku: newCode,
+        costo: p.costo,
+        precio: p.precio,
+        precio_oferta: null,
+      });
+    }
+    setPresentaciones(loadedPres);
+
+    // Load combo items if applicable
+    if ((p as any).es_combo) {
+      setIsCombo(true);
+      const { data: ciData } = await supabase
+        .from("combo_items")
+        .select("*, productos!combo_items_producto_id_fkey(id, codigo, nombre, precio, costo, stock)")
+        .eq("combo_id", p.id);
+      setComboItems((ciData || []).map((d: any) => ({
+        producto_id: d.producto_id,
+        cantidad: d.cantidad,
+        descuento: d.descuento ?? 0,
+        producto: d.productos,
+      })));
+    } else {
+      setIsCombo(false);
+      setComboItems([]);
+    }
+
+    setDialogOpen(true);
   };
 
   // History
@@ -681,13 +786,31 @@ export default function ProductosPage() {
   // Export Excel
   const handleExport = async () => {
     // Load proveedores for all products
-    const { data: allProdProv } = await supabase
-      .from("producto_proveedores")
-      .select("producto_id, proveedores(nombre)");
+    const [{ data: allProdProv }, { data: allPresData }] = await Promise.all([
+      supabase.from("producto_proveedores").select("producto_id, proveedores(nombre)"),
+      supabase.from("presentaciones").select("producto_id, nombre, cantidad, sku, costo, precio"),
+    ]);
     const provMap: Record<string, string> = {};
     (allProdProv || []).forEach((pp: any) => {
       const name = pp.proveedores?.nombre || "";
       if (name) provMap[pp.producto_id] = provMap[pp.producto_id] ? `${provMap[pp.producto_id]}, ${name}` : name;
+    });
+
+    // Build box presentation map (presentations with cantidad > 1)
+    const boxPresMap: Record<string, { nombre: string; cantidad: number; sku: string; costo: number; precio: number }> = {};
+    (allPresData || []).forEach((pr: any) => {
+      if (pr.cantidad > 1) {
+        // Keep the one with highest cantidad (i.e., the "caja")
+        if (!boxPresMap[pr.producto_id] || pr.cantidad > boxPresMap[pr.producto_id].cantidad) {
+          boxPresMap[pr.producto_id] = {
+            nombre: pr.nombre || `Caja x${pr.cantidad}`,
+            cantidad: pr.cantidad,
+            sku: pr.sku || "",
+            costo: pr.costo || 0,
+            precio: pr.precio || 0,
+          };
+        }
+      }
     });
 
     // Load subcategorias for name resolution
@@ -696,6 +819,8 @@ export default function ProductosPage() {
 
     const rows = products.map((p) => {
       const ganancia = p.costo > 0 ? (((p.precio - p.costo) / p.costo) * 100) : 0;
+      const box = boxPresMap[p.id];
+      const boxMargin = box && box.costo > 0 ? (((box.precio - box.costo) / box.costo) * 100) : 0;
       return {
         "Codigo de Barras": p.codigo,
         "Nombre del Articulo": p.nombre,
@@ -710,6 +835,12 @@ export default function ProductosPage() {
         "Unidad Medida": p.unidad_medida,
         "Stock Minimo": p.stock_minimo || 0,
         "Stock Maximo": p.stock_maximo || 0,
+        "Presentacion Caja": box?.nombre || "",
+        "Cantidad Caja": box?.cantidad || "",
+        "Codigo Caja": box?.sku || "",
+        "Costo Caja": box?.costo || "",
+        "Precio Caja": box?.precio || "",
+        "Margen Caja %": box ? Math.round(boxMargin * 10) / 10 : "",
       };
     });
 
@@ -730,6 +861,12 @@ export default function ProductosPage() {
       { wch: 12 }, // Unidad
       { wch: 12 }, // Stock Min
       { wch: 12 }, // Stock Max
+      { wch: 16 }, // Presentacion Caja
+      { wch: 14 }, // Cantidad Caja
+      { wch: 16 }, // Codigo Caja
+      { wch: 14 }, // Costo Caja
+      { wch: 14 }, // Precio Caja
+      { wch: 14 }, // Margen Caja
     ];
 
     const wb = XLSX.utils.book_new();
@@ -1458,14 +1595,25 @@ export default function ProductosPage() {
                             size="icon"
                             className="h-8 w-8 text-muted-foreground"
                             onClick={() => openHistory(product)}
+                            title="Historial"
                           >
                             <Clock className="w-3.5 h-3.5" />
                           </Button>
                           <Button
                             variant="ghost"
                             size="icon"
+                            className="h-8 w-8 text-muted-foreground"
+                            onClick={() => handleDuplicate(product)}
+                            title="Duplicar"
+                          >
+                            <Copy className="w-3.5 h-3.5" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
                             className="h-8 w-8 text-muted-foreground hover:text-destructive"
                             onClick={() => handleDelete(product.id)}
+                            title="Eliminar"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                           </Button>
