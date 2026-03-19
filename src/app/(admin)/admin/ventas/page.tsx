@@ -540,10 +540,29 @@ export default function VentasPage() {
           }
         }
 
+        // Check auto-switch: units → medio cartón (for Mt products going from 1 to 0.5)
+        if (i.presentacion === "Unidad" && qty === 0.5 && i.unit === "Mt") {
+          const pres = presentacionesMap[i.producto_id] || [];
+          const medioPres = pres.find((p) => Number(p.cantidad) <= 0.5 || (p.nombre && p.nombre.toLowerCase().includes("medio")));
+          if (medioPres) {
+            const prod = products.find((p) => p.id === i.producto_id);
+            return {
+              ...i,
+              qty: 1,
+              price: medioPres.precio,
+              code: medioPres.codigo || i.code,
+              description: prod ? `${prod.nombre} (Medio Cartón)` : i.description,
+              presentacion: medioPres.nombre || "Medio Carton",
+              unidades_por_presentacion: Number(medioPres.cantidad) || 0.5,
+              subtotal: medioPres.precio * (1 - i.discount / 100),
+            };
+          }
+        }
+
         // Check auto-switch: units → box
         if (checkSwitch && i.producto_id && i.presentacion === "Unidad") {
           const pres = presentacionesMap[i.producto_id] || [];
-          const match = pres.find((p) => Number(p.cantidad) === qty && p.nombre !== "Unidad");
+          const match = pres.find((p) => Number(p.cantidad) === qty && p.nombre !== "Unidad" && Number(p.cantidad) > 1);
           if (match) {
             const prod = products.find((p) => p.id === i.producto_id);
             return {
@@ -1547,7 +1566,8 @@ export default function VentasPage() {
                               const numCajas = item.qty / boxQty;
                               return (
                                 <Badge variant="secondary" className="mt-1 text-[10px] bg-indigo-50 text-indigo-600 border-indigo-200">
-                                  = {numCajas} {numCajas === 1 ? boxPres.nombre : (boxPres.nombre.replace(/^Caja/, "Cajas"))}
+                                  = {numCajas} {numCajas === 1 ? boxPres.nombre : (boxPres.nombre.replace(/^Caja/, "Cajas"))} ({boxQty} un.)
+                                  {boxPres.codigo && <span className="ml-1 text-muted-foreground">• {boxPres.codigo}</span>}
                                 </Badge>
                               );
                             }
