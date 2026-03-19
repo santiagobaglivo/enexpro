@@ -124,25 +124,6 @@ export default function ListadoVentasPage() {
   const [detailItems, setDetailItems] = useState<VentaItemRow[]>([]);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
 
-  // Track printed remitos client-side
-  const [printedIds, setPrintedIds] = useState<Set<string>>(() => {
-    if (typeof window !== "undefined") {
-      try {
-        const stored = localStorage.getItem("printed_remitos");
-        if (stored) return new Set(JSON.parse(stored));
-      } catch {}
-    }
-    return new Set();
-  });
-  const markAsPrinted = (id: string) => {
-    setPrintedIds((prev) => {
-      const next = new Set(prev);
-      next.add(id);
-      localStorage.setItem("printed_remitos", JSON.stringify([...next]));
-      return next;
-    });
-  };
-
   // Print
   const [empresa, setEmpresa] = useState<Empresa | null>(null);
   const [vendedores, setVendedores] = useState<{ id: string; nombre: string }[]>([]);
@@ -275,7 +256,6 @@ export default function ListadoVentasPage() {
     setPrintItems(items);
     setPrintLineItems(lineItems);
     setPrintReady(true);
-    markAsPrinted(v.id);
   };
 
   useEffect(() => {
@@ -525,9 +505,8 @@ export default function ListadoVentasPage() {
                           <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openDetail(v)} title="Ver detalle">
                             <Eye className="w-3.5 h-3.5" />
                           </Button>
-                          <Button variant="ghost" size="icon" className={`h-8 w-8 relative ${printedIds.has(v.id) ? "text-green-600" : ""}`} onClick={() => preparePrint(v)} title={printedIds.has(v.id) ? "Impreso - Reimprimir" : "Imprimir"}>
+                          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => preparePrint(v)} title="Imprimir">
                             <Printer className="w-3.5 h-3.5" />
-                            {printedIds.has(v.id) && <CheckCircle className="w-2.5 h-2.5 absolute -top-0.5 -right-0.5 text-green-600" />}
                           </Button>
                           {!v.entregado && !v.tipo_comprobante.includes("Nota de Crédito") && (
                             <Button

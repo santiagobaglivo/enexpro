@@ -169,7 +169,7 @@ export default function TiendaNavbar() {
                 Carrito
               </span>
               {subtotal > 0 && (
-                <span suppressHydrationWarning className="hidden lg:inline text-xs font-semibold text-pink-600 ml-0.5">
+                <span suppressHydrationWarning className="text-[10px] lg:text-xs font-semibold text-pink-600 ml-0.5">
                   {new Intl.NumberFormat("es-AR", { style: "currency", currency: "ARS", minimumFractionDigits: 0 }).format(subtotal)}
                 </span>
               )}
