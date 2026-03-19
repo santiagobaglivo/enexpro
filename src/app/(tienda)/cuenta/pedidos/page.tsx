@@ -357,7 +357,8 @@ export default function PedidosPage() {
 
         {isExpanded && (
           <div className="border-t border-gray-100 mx-5 md:mx-6">
-            {pedido.items.length > 0 && (
+            {/* Show pedido items if available, otherwise fall back to venta items */}
+            {(pedido.items.length > 0 || (pedido.venta && pedido.venta.items.length > 0)) && (
               <table className="w-full text-sm">
                 <thead>
                   <tr className="text-xs text-gray-400 uppercase tracking-wider">
@@ -368,7 +369,21 @@ export default function PedidosPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {pedido.items.map((item) => {
+                  {(pedido.items.length > 0 ? pedido.items.map((item) => ({
+                    id: item.id,
+                    nombre: item.nombre,
+                    presentacion: item.presentacion,
+                    unidades_por_presentacion: item.unidades_por_presentacion,
+                    cantidad: item.cantidad,
+                    precio_unitario: item.precio_unitario,
+                  })) : (pedido.venta?.items || []).map((item, idx) => ({
+                    id: idx,
+                    nombre: item.descripcion,
+                    presentacion: item.presentacion || "Unidad",
+                    unidades_por_presentacion: item.unidades_por_presentacion,
+                    cantidad: item.cantidad,
+                    precio_unitario: item.precio_unitario,
+                  }))).map((item) => {
                     const isMedio = item.presentacion && (item.presentacion.toLowerCase().includes("medio") || (item.unidades_por_presentacion != null && item.unidades_por_presentacion <= 0.5 && item.unidades_por_presentacion > 0));
                     const isBox = item.presentacion && item.presentacion !== "Unidad" && (item.unidades_por_presentacion || 1) > 1;
                     const isCombo = item.nombre.toLowerCase().includes("combo");

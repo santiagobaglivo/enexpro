@@ -232,7 +232,7 @@ export default function CheckoutPage() {
             .single()
             .then(async ({ data: authRec }) => {
               if (!authRec?.cliente_id) return;
-              const { data: cli } = await supabase.from("clientes").select("nombre, email, telefono, domicilio, localidad, provincia, codigo_postal, saldo").eq("id", authRec.cliente_id).single();
+              const { data: cli } = await supabase.from("clientes").select("nombre, email, telefono, domicilio, localidad, provincia, codigo_postal, saldo, dias_entrega").eq("id", authRec.cliente_id).single();
               if (cli) {
                 // Pre-fill contact fields from clientes table (more reliable than localStorage)
                 if (cli.nombre) {
@@ -276,6 +276,18 @@ export default function CheckoutPage() {
                     }
                   });
               }
+              // Override delivery dates with client-specific days if available
+              const clientDias = cli?.dias_entrega;
+              if (clientDias && clientDias.length > 0) {
+                // Fetch config directly to avoid stale state
+                const { data: cfgData } = await supabase.from("tienda_config").select("dias_max_programacion, hora_corte").single();
+                const maxDias = cfgData?.dias_max_programacion ?? 14;
+                const horaCorte = cfgData?.hora_corte ?? "12:00";
+                const clientDates = getAvailableDates(clientDias, maxDias, horaCorte);
+                setAvailableDates(clientDates);
+                if (clientDates.length > 0) setFechaEntrega(clientDates[0].value);
+              }
+
               const saldo = cli?.saldo || 0;
               if (saldo > 0) {
                 setSaldoPendiente(saldo);
