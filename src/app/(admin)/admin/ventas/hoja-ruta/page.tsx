@@ -99,7 +99,7 @@ export default function HojaDeRutaPage() {
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailVenta, setDetailVenta] = useState<VentaRow | null>(null);
   const [orden, setOrden] = useState<Record<string, number>>({});
-  const [filterEntrega, setFilterEntrega] = useState<"todos" | "envio" | "retiro">("todos");
+  const [filterEntrega] = useState<"todos" | "envio" | "retiro">("todos");
   const [search, setSearch] = useState("");
   const [showAllPending, setShowAllPending] = useState(true);
 
@@ -124,6 +124,7 @@ export default function HojaDeRutaPage() {
         "id, numero, tipo_comprobante, fecha, forma_pago, total, estado, observacion, entregado, cliente_id, origen, metodo_entrega, clientes(id, nombre, domicilio, localidad, telefono, saldo), venta_items(id, descripcion, cantidad, precio_unitario, subtotal, unidad_medida)"
       )
       .eq("entregado", false)
+      .eq("metodo_entrega", "envio")
       .neq("estado", "anulada")
       .order("created_at", { ascending: false });
 
@@ -239,6 +240,18 @@ export default function HojaDeRutaPage() {
     const pagos = historialPagos[v.id] || [];
     return s + pagos.reduce((a, p) => a + p.monto, 0);
   }, 0);
+
+  // Group historial by day
+  const historialByDay = (() => {
+    const map: Record<string, VentaRow[]> = {};
+    for (const v of filteredHistorial) {
+      const day = v.fecha;
+      if (!map[day]) map[day] = [];
+      map[day].push(v);
+    }
+    // Sort days descending
+    return Object.entries(map).sort(([a], [b]) => b.localeCompare(a));
+  })();
 
   const handleMarkDelivered = async (id: string) => {
     const { error } = await supabase
@@ -408,9 +421,6 @@ export default function HojaDeRutaPage() {
   const totalYaPagado = filteredVentas.reduce((s, v) => s + (pagadoPorVenta[v.id] || 0), 0);
   const totalACobrar = Math.max(0, valorTotal - totalYaPagado);
 
-  // Counts per filter
-  const countEnvio = ventas.filter((v) => v.metodo_entrega === "envio").length;
-  const countRetiro = ventas.filter((v) => v.metodo_entrega === "retiro" || v.metodo_entrega === "retiro_local" || !v.metodo_entrega).length;
 
   const navTabs = [
     { name: "Todas las Ventas", href: "/ventas/listado" },
@@ -558,117 +568,169 @@ export default function HojaDeRutaPage() {
             </Card>
           </div>
 
-          {/* Historial table */}
-          <Card>
-            <CardContent className="p-6">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-lg font-semibold text-gray-900">Historial de Entregas</h2>
-                <Button variant="outline" size="sm" onClick={fetchHistorial} disabled={historialLoading}>
-                  <RefreshCw className={`w-4 h-4 mr-2 ${historialLoading ? "animate-spin" : ""}`} />
-                  Actualizar
-                </Button>
-              </div>
+          {/* Historial grouped by day */}
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-semibold text-gray-900">Historial de Entregas</h2>
+            <Button variant="outline" size="sm" onClick={fetchHistorial} disabled={historialLoading}>
+              <RefreshCw className={`w-4 h-4 mr-2 ${historialLoading ? "animate-spin" : ""}`} />
+              Actualizar
+            </Button>
+          </div>
 
-              {historialLoading ? (
-                <div className="flex items-center justify-center py-12">
-                  <Loader2 className="w-6 h-6 animate-spin text-gray-400" />
-                </div>
-              ) : filteredHistorial.length === 0 ? (
-                <div className="text-center py-12 text-gray-400">
-                  <CheckCircle className="w-10 h-10 mx-auto mb-3 opacity-50" />
-                  <p className="font-medium text-gray-500">No hay entregas en este periodo</p>
-                  <p className="text-sm mt-1">Selecciona otro rango de fechas</p>
-                </div>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b text-left text-gray-500">
-                        <th className="pb-3 px-3">Fecha</th>
-                        <th className="pb-3 px-3">Nro. Venta</th>
-                        <th className="pb-3 px-3">Cliente</th>
-                        <th className="pb-3 px-3">Entrega</th>
-                        <th className="pb-3 px-3 text-right">Total</th>
-                        <th className="pb-3 px-3 text-right">Cobrado</th>
-                        <th className="pb-3 px-3">Metodo Pago</th>
-                        <th className="pb-3 px-3 text-right">Acciones</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {filteredHistorial.map((venta) => {
-                        const pagos = historialPagos[venta.id] || [];
-                        const totalCobrado = pagos.reduce((a, p) => a + p.monto, 0);
-                        const metodos = [...new Set(pagos.map((p) => p.metodo))].join(", ") || venta.forma_pago;
+          {historialLoading ? (
+            <div className="flex items-center justify-center py-12">
+              <Loader2 className="w-6 h-6 animate-spin text-gray-400" />
+            </div>
+          ) : filteredHistorial.length === 0 ? (
+            <div className="text-center py-12 text-gray-400">
+              <CheckCircle className="w-10 h-10 mx-auto mb-3 opacity-50" />
+              <p className="font-medium text-gray-500">No hay entregas en este periodo</p>
+              <p className="text-sm mt-1">Selecciona otro rango de fechas</p>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {historialByDay.map(([day, dayVentas]) => {
+                const dayTotal = dayVentas.reduce((s, v) => s + v.total, 0);
+                const dayCobrado = dayVentas.reduce((s, v) => {
+                  const pagos = historialPagos[v.id] || [];
+                  return s + pagos.reduce((a, p) => a + p.monto, 0);
+                }, 0);
+                const dayPendiente = dayTotal - dayCobrado;
+                const dayLabel = new Date(day + "T12:00:00").toLocaleDateString("es-AR", {
+                  weekday: "long",
+                  day: "numeric",
+                  month: "long",
+                });
+                const clientesDeudores = dayVentas.filter((v) => {
+                  const pagos = historialPagos[v.id] || [];
+                  const cobrado = pagos.reduce((a, p) => a + p.monto, 0);
+                  return v.total - cobrado > 0;
+                });
 
-                        return (
-                          <tr key={venta.id} className="border-b hover:bg-gray-50 transition-colors">
-                            <td className="py-3 px-3 text-xs text-gray-500">{venta.fecha}</td>
-                            <td className="py-3 px-3">
-                              <div className="font-mono text-xs font-semibold text-gray-700">{venta.numero}</div>
-                              <span className="text-xs text-gray-400">{venta.tipo_comprobante}</span>
-                            </td>
-                            <td className="py-3 px-3 font-medium text-gray-900">
-                              {venta.clientes?.nombre ?? "Sin cliente"}
-                            </td>
-                            <td className="py-3 px-3">
-                              <Badge variant={venta.metodo_entrega === "envio" ? "default" : "secondary"} className={`text-xs ${venta.metodo_entrega === "envio" ? "bg-blue-100 text-blue-700 hover:bg-blue-100" : "bg-gray-100 text-gray-600 hover:bg-gray-100"}`}>
-                                {venta.metodo_entrega === "envio" ? "Envio" : "Retiro"}
-                              </Badge>
-                            </td>
-                            <td className="py-3 px-3 text-right font-semibold text-gray-900">
-                              {formatCurrency(venta.total)}
-                            </td>
-                            <td className="py-3 px-3 text-right text-green-600 font-medium">
-                              {formatCurrency(totalCobrado)}
-                            </td>
-                            <td className="py-3 px-3">
-                              <Badge variant="secondary" className="text-xs">{metodos || "---"}</Badge>
-                            </td>
-                            <td className="py-3 px-3">
-                              <div className="flex items-center justify-end">
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  className="h-8 w-8"
-                                  onClick={() => handleViewDetail(venta)}
-                                  title="Ver detalle"
-                                >
-                                  <Eye className="w-4 h-4 text-gray-500" />
-                                </Button>
-                              </div>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </CardContent>
-          </Card>
+                return (
+                  <Card key={day}>
+                    <CardContent className="p-4">
+                      {/* Day header with summary */}
+                      <div className="flex items-center justify-between mb-3 pb-3 border-b">
+                        <div className="flex items-center gap-3">
+                          <div className="w-9 h-9 rounded-lg bg-gray-100 flex items-center justify-center">
+                            <Calendar className="w-4 h-4 text-gray-600" />
+                          </div>
+                          <div>
+                            <p className="font-semibold text-gray-900 capitalize">{dayLabel}</p>
+                            <p className="text-xs text-gray-500">{dayVentas.length} entrega{dayVentas.length !== 1 ? "s" : ""}</p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-6 text-sm">
+                          <div className="text-right">
+                            <p className="text-xs text-gray-500">Total</p>
+                            <p className="font-bold text-gray-900">{formatCurrency(dayTotal)}</p>
+                          </div>
+                          <div className="text-right">
+                            <p className="text-xs text-gray-500">Cobrado</p>
+                            <p className="font-bold text-green-600">{formatCurrency(dayCobrado)}</p>
+                          </div>
+                          {dayPendiente > 0 && (
+                            <div className="text-right">
+                              <p className="text-xs text-gray-500">Pendiente</p>
+                              <p className="font-bold text-orange-600">{formatCurrency(dayPendiente)}</p>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Deudores warning */}
+                      {clientesDeudores.length > 0 && (
+                        <div className="mb-3 px-3 py-2 bg-orange-50 border border-orange-200 rounded-lg text-xs text-orange-700">
+                          <span className="font-semibold">Saldo pendiente:</span>{" "}
+                          {clientesDeudores.map((v) => {
+                            const pagos = historialPagos[v.id] || [];
+                            const cobrado = pagos.reduce((a, p) => a + p.monto, 0);
+                            return `${v.clientes?.nombre || "Sin cliente"} (${formatCurrency(v.total - cobrado)})`;
+                          }).join(", ")}
+                        </div>
+                      )}
+
+                      {/* Day orders table */}
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="border-b text-left text-gray-500">
+                              <th className="pb-2 px-3">Nro. Venta</th>
+                              <th className="pb-2 px-3">Cliente</th>
+                              <th className="pb-2 px-3">Entrega</th>
+                              <th className="pb-2 px-3 text-right">Total</th>
+                              <th className="pb-2 px-3 text-right">Cobrado</th>
+                              <th className="pb-2 px-3">Metodo Pago</th>
+                              <th className="pb-2 px-3 text-right">Acciones</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {dayVentas.map((venta) => {
+                              const pagos = historialPagos[venta.id] || [];
+                              const totalCobrado = pagos.reduce((a, p) => a + p.monto, 0);
+                              const metodos = [...new Set(pagos.map((p) => p.metodo))].join(", ") || venta.forma_pago;
+                              const debe = venta.total - totalCobrado;
+
+                              return (
+                                <tr key={venta.id} className="border-b last:border-b-0 hover:bg-gray-50 transition-colors">
+                                  <td className="py-2.5 px-3">
+                                    <div className="font-mono text-xs font-semibold text-gray-700">{venta.numero}</div>
+                                    <span className="text-xs text-gray-400">{venta.tipo_comprobante}</span>
+                                  </td>
+                                  <td className="py-2.5 px-3 font-medium text-gray-900">
+                                    {venta.clientes?.nombre ?? "Sin cliente"}
+                                  </td>
+                                  <td className="py-2.5 px-3">
+                                    <Badge variant={venta.metodo_entrega === "envio" ? "default" : "secondary"} className={`text-xs ${venta.metodo_entrega === "envio" ? "bg-blue-100 text-blue-700 hover:bg-blue-100" : "bg-gray-100 text-gray-600 hover:bg-gray-100"}`}>
+                                      {venta.metodo_entrega === "envio" ? "Envio" : "Retiro"}
+                                    </Badge>
+                                  </td>
+                                  <td className="py-2.5 px-3 text-right font-semibold text-gray-900">
+                                    {formatCurrency(venta.total)}
+                                  </td>
+                                  <td className={`py-2.5 px-3 text-right font-medium ${debe > 0 ? "text-orange-600" : "text-green-600"}`}>
+                                    {formatCurrency(totalCobrado)}
+                                    {debe > 0 && <span className="block text-xs text-orange-500">Debe {formatCurrency(debe)}</span>}
+                                  </td>
+                                  <td className="py-2.5 px-3">
+                                    <Badge variant="secondary" className="text-xs">{metodos || "---"}</Badge>
+                                  </td>
+                                  <td className="py-2.5 px-3">
+                                    <div className="flex items-center justify-end">
+                                      <Button
+                                        variant="ghost"
+                                        size="icon"
+                                        className="h-8 w-8"
+                                        onClick={() => handleViewDetail(venta)}
+                                        title="Ver detalle"
+                                      >
+                                        <Eye className="w-4 h-4 text-gray-500" />
+                                      </Button>
+                                    </div>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </CardContent>
+                  </Card>
+                );
+              })}
+            </div>
+          )}
         </>
       )}
 
       {activeTab === "pendientes" && (<>
-      {/* Filter tabs: Envío / Retiro / Todos */}
+      {/* Search */}
       <div className="flex items-center gap-3">
-        <div className="bg-gray-100 rounded-lg p-1 inline-flex">
-          {([
-            { key: "envio" as const, label: "Envío a domicilio", count: countEnvio },
-            { key: "retiro" as const, label: "Retiro en local", count: countRetiro },
-            { key: "todos" as const, label: "Todos", count: ventas.length },
-          ]).map((f) => (
-            <button
-              key={f.key}
-              onClick={() => setFilterEntrega(f.key)}
-              className={`rounded-md px-4 py-2 text-sm transition-all ${
-                filterEntrega === f.key ? "bg-white shadow-sm font-semibold text-gray-900" : "text-gray-500 hover:text-gray-700"
-              }`}
-            >
-              {f.label} {f.count > 0 && <span className="ml-1 text-xs bg-gray-200 text-gray-600 rounded-full px-1.5 py-0.5">{f.count}</span>}
-            </button>
-          ))}
-        </div>
+        <Badge className="bg-blue-100 text-blue-700 hover:bg-blue-100 text-sm px-3 py-1">
+          <Truck className="w-4 h-4 mr-1.5" />
+          Solo envios a domicilio
+        </Badge>
         <div className="relative flex-1 max-w-xs">
           <input
             type="text"

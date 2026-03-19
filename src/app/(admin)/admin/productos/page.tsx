@@ -287,7 +287,7 @@ export default function ProductosPage() {
   const fetchProducts = useCallback(async () => {
     setLoading(true);
     const [{ data }, { data: allPres }, { data: allCI }] = await Promise.all([
-      supabase.from("productos").select("id, codigo, nombre, precio, costo, stock, stock_minimo, stock_maximo, categoria_id, subcategoria_id, marca_id, imagen_url, es_combo, activo, unidad_medida, descripcion_detallada, visibilidad, updated_at, categorias(nombre), marcas(nombre)").order("nombre"),
+      supabase.from("productos").select("id, codigo, nombre, precio, costo, stock, stock_minimo, stock_maximo, categoria_id, subcategoria_id, marca_id, imagen_url, es_combo, activo, unidad_medida, descripcion_detallada, visibilidad, updated_at, categorias(nombre), marcas(nombre)").eq("activo", true).order("nombre"),
       supabase.from("presentaciones").select("producto_id, sku, nombre, cantidad"),
       supabase.from("combo_items").select("combo_id, cantidad, productos!combo_items_producto_id_fkey(stock)"),
     ]);
@@ -595,27 +595,11 @@ export default function ProductosPage() {
   const handleDelete = async (id: string) => {
     const product = products.find((p) => p.id === id);
     if (!product) return;
-    if (!window.confirm(`¿Estás seguro de eliminar "${product.nombre}" permanentemente? Esta acción no se puede deshacer.`)) return;
+    if (!window.confirm(`¿Estás seguro de eliminar "${product.nombre}"?`)) return;
 
     try {
-      // Delete all related records first
-      await supabase.from("combo_items").delete().eq("combo_id", id);
-      await supabase.from("combo_items").delete().eq("producto_id", id);
-      await supabase.from("presentaciones").delete().eq("producto_id", id);
-      await supabase.from("producto_proveedores").delete().eq("producto_id", id);
-      await supabase.from("stock_movimientos").delete().eq("producto_id", id);
-      const { error } = await supabase.from("productos").delete().eq("id", id);
-      if (error) {
-        // If foreign key error, try soft delete instead
-        if (error.code === "23503") {
-          await supabase.from("productos").update({ activo: false, visibilidad: "oculto" }).eq("id", id);
-          showAdminToast("El producto tiene ventas asociadas. Se ocultó en lugar de eliminarse.", "info");
-        } else {
-          throw error;
-        }
-      } else {
-        showAdminToast("Producto eliminado permanentemente", "success");
-      }
+      await supabase.from("productos").update({ activo: false, visibilidad: "oculto" }).eq("id", id);
+      showAdminToast("Producto eliminado correctamente", "success");
       fetchProducts();
     } catch (err: any) {
       showAdminToast(err.message || "Error al eliminar producto", "error");
@@ -1257,7 +1241,7 @@ export default function ProductosPage() {
             </div>
             <div>
               <p className="text-xs text-muted-foreground">Total articulos</p>
-              <p className="text-xl font-bold">{products.filter((p: any) => p.activo).length}</p>
+              <p className="text-xl font-bold">{products.length}</p>
             </div>
           </CardContent>
         </Card>
@@ -1527,10 +1511,7 @@ export default function ProductosPage() {
                       </td>
                       <td className="py-3 px-4 font-medium">
                         <div className="flex items-center gap-2 flex-wrap">
-                          <span className={!(product as any).activo ? "opacity-50" : ""}>{product.nombre}</span>
-                          {!(product as any).activo && (
-                            <Badge variant="outline" className="text-[10px] px-1.5 py-0 border-red-300 text-red-600 bg-red-50">Inactivo</Badge>
-                          )}
+                          <span>{product.nombre}</span>
                           {(product as any).es_combo && (
                             <Badge className="text-[10px] px-1.5 py-0 bg-emerald-100 text-emerald-700 border border-emerald-300">COMBO</Badge>
                           )}

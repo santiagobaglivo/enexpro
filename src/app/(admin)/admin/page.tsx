@@ -141,10 +141,7 @@ export default function DashboardPage() {
     telefono: string | null;
     observaciones: string | null;
   }
-  const [pedidosHoy, setPedidosHoy] = useState<PedidoWeb[]>([]);
-  const [pedidosProgramados, setPedidosProgramados] = useState<PedidoWeb[]>([]);
-  const [pedidosVencidos, setPedidosVencidos] = useState<PedidoWeb[]>([]);
-  const [pedidosTab, setPedidosTab] = useState<"hoy" | "programados" | "pendientes">("hoy");
+  const [allPedidosWeb, setAllPedidosWeb] = useState<PedidoWeb[]>([]);
   const [pedidoDetailOpen, setPedidoDetailOpen] = useState(false);
   const [pedidoDetail, setPedidoDetail] = useState<PedidoWeb | null>(null);
   const [pedidoItems, setPedidoItems] = useState<PedidoItemWeb[]>([]);
@@ -334,9 +331,7 @@ export default function DashboardPage() {
       .order("created_at", { ascending: false });
 
     const pedidos = (allPedidos as PedidoWeb[]) || [];
-    setPedidosHoy(pedidos.filter((p) => p.fecha_entrega === today));
-    setPedidosProgramados(pedidos.filter((p) => p.fecha_entrega && p.fecha_entrega > today));
-    setPedidosVencidos(pedidos.filter((p) => p.fecha_entrega && p.fecha_entrega < today));
+    setAllPedidosWeb(pedidos);
 
     setLoading(false);
   }, [getDateRange]);
@@ -535,158 +530,143 @@ export default function DashboardPage() {
             </Card>
           </div>
 
-          {/* Pedidos web pendientes - Tabbed section */}
-          {(pedidosHoy.length > 0 || pedidosProgramados.length > 0 || pedidosVencidos.length > 0) && (
-            <Card>
-              <CardHeader className="pb-3">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                  <CardTitle className="text-base flex items-center gap-2">
-                    <ShoppingCart className="w-4 h-4 text-primary" />
-                    Pedidos Web
-                  </CardTitle>
-                  <div className="flex border rounded-lg overflow-hidden">
-                    {([
-                      { key: "hoy" as const, label: "Hoy", count: pedidosHoy.length },
-                      { key: "programados" as const, label: "Programados", count: pedidosProgramados.length },
-                      { key: "pendientes" as const, label: "Pendientes", count: pedidosVencidos.length },
-                    ]).map((tab) => (
-                      <button
-                        key={tab.key}
-                        onClick={() => setPedidosTab(tab.key)}
-                        className={`px-4 py-1.5 text-sm font-medium transition-colors flex items-center gap-1.5 ${
-                          pedidosTab === tab.key
-                            ? "bg-primary text-primary-foreground"
-                            : "bg-background hover:bg-muted text-muted-foreground"
-                        }`}
-                      >
-                        {tab.label}
-                        {tab.count > 0 && (
-                          <span className={`text-xs rounded-full px-1.5 py-0.5 min-w-[20px] text-center ${
-                            pedidosTab === tab.key
-                              ? "bg-primary-foreground/20 text-primary-foreground"
-                              : tab.key === "pendientes" && tab.count > 0
-                                ? "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"
-                                : "bg-muted text-muted-foreground"
-                          }`}>
-                            {tab.count}
-                          </span>
-                        )}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </CardHeader>
-              <CardContent>
-                {(() => {
-                  const currentList =
-                    pedidosTab === "hoy" ? pedidosHoy :
-                    pedidosTab === "programados" ? pedidosProgramados :
-                    pedidosVencidos;
+          {/* Pedidos web pendientes - Grouped by delivery date */}
+          {allPedidosWeb.length > 0 && (() => {
+            const today = todayARG();
+            const tomorrow = (() => { const d = new Date(today + "T12:00:00"); d.setDate(d.getDate() + 1); return d.toISOString().split("T")[0]; })();
+            const totalAmount = allPedidosWeb.reduce((s, p) => s + p.total, 0);
 
-                  if (currentList.length === 0) {
-                    return (
-                      <div className="text-center py-10 text-muted-foreground">
-                        <ShoppingCart className="w-8 h-8 mx-auto mb-2 opacity-40" />
-                        <p className="text-sm">
-                          {pedidosTab === "hoy" && "No hay pedidos para hoy"}
-                          {pedidosTab === "programados" && "No hay pedidos programados"}
-                          {pedidosTab === "pendientes" && "No hay pedidos vencidos"}
-                        </p>
+            // Group by fecha_entrega
+            const byDate: Record<string, PedidoWeb[]> = {};
+            for (const p of allPedidosWeb) {
+              const key = p.fecha_entrega || "_sin_fecha";
+              if (!byDate[key]) byDate[key] = [];
+              byDate[key].push(p);
+            }
+            // Sort: overdue first, then today, then future, then sin fecha
+            const sortedDates = Object.keys(byDate).sort((a, b) => {
+              if (a === "_sin_fecha") return 1;
+              if (b === "_sin_fecha") return -1;
+              return a.localeCompare(b);
+            });
+
+            const getDateLabel = (key: string) => {
+              if (key === "_sin_fecha") return "Sin fecha de entrega";
+              if (key === today) return "Hoy";
+              if (key === tomorrow) return "Manana";
+              if (key < today) return `Vencido — ${new Date(key + "T12:00:00").toLocaleDateString("es-AR", { weekday: "long", day: "numeric", month: "short" })}`;
+              return new Date(key + "T12:00:00").toLocaleDateString("es-AR", { weekday: "long", day: "numeric", month: "short" });
+            };
+
+            return (
+              <Card>
+                <CardHeader className="pb-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <CardTitle className="text-base flex items-center gap-2">
+                      <ShoppingCart className="w-4 h-4 text-primary" />
+                      Pedidos Web Pendientes
+                    </CardTitle>
+                    <div className="flex items-center gap-4 text-sm">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-muted-foreground">Pedidos:</span>
+                        <span className="font-bold">{allPedidosWeb.length}</span>
                       </div>
-                    );
-                  }
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-muted-foreground">Total:</span>
+                        <span className="font-bold">{formatCurrency(totalAmount)}</span>
+                      </div>
+                    </div>
+                  </div>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {sortedDates.map((dateKey) => {
+                    const pedidos = byDate[dateKey];
+                    const isOverdue = dateKey !== "_sin_fecha" && dateKey < today;
+                    const isToday = dateKey === today;
+                    const dateTotal = pedidos.reduce((s, p) => s + p.total, 0);
+                    const label = getDateLabel(dateKey);
 
-                  return (
-                    <div className="grid gap-3">
-                      {currentList.map((p) => {
-                        const isOverdue = pedidosTab === "pendientes";
-                        const createdDate = new Date(p.created_at);
-                        const timeStr = createdDate.toLocaleTimeString("es-AR", {
-                          hour: "2-digit",
-                          minute: "2-digit",
-                          timeZone: "America/Argentina/Buenos_Aires",
-                        });
-
-                        return (
-                          <div
-                            key={p.id}
-                            className={`rounded-lg border p-4 transition-colors hover:bg-muted/30 ${
-                              isOverdue ? "border-red-200 bg-red-50/50 dark:border-red-900/30 dark:bg-red-950/20" : ""
-                            }`}
-                          >
-                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                              <div className="flex items-start gap-3 flex-1 min-w-0">
-                                <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${
-                                  isOverdue
-                                    ? "bg-red-100 dark:bg-red-900/30"
-                                    : p.metodo_entrega === "envio"
+                    return (
+                      <div key={dateKey}>
+                        {/* Date header */}
+                        <div className={`flex items-center justify-between px-3 py-2 rounded-lg mb-2 ${
+                          isOverdue ? "bg-red-50 dark:bg-red-950/20" : isToday ? "bg-primary/5" : "bg-muted/50"
+                        }`}>
+                          <div className="flex items-center gap-2">
+                            {isOverdue && <AlertTriangle className="w-3.5 h-3.5 text-red-500" />}
+                            <span className={`text-sm font-semibold capitalize ${isOverdue ? "text-red-700 dark:text-red-400" : ""}`}>{label}</span>
+                            <span className="text-xs text-muted-foreground">({pedidos.length})</span>
+                          </div>
+                          <span className="text-sm font-semibold">{formatCurrency(dateTotal)}</span>
+                        </div>
+                        {/* Orders for this date */}
+                        <div className="space-y-2">
+                          {pedidos.map((p) => {
+                            const createdDate = new Date(p.created_at);
+                            const timeStr = createdDate.toLocaleTimeString("es-AR", {
+                              hour: "2-digit",
+                              minute: "2-digit",
+                              timeZone: "America/Argentina/Buenos_Aires",
+                            });
+                            return (
+                              <div
+                                key={p.id}
+                                className={`rounded-lg border px-4 py-3 transition-colors hover:bg-muted/30 flex items-center justify-between gap-3 ${
+                                  isOverdue ? "border-red-200 dark:border-red-900/30" : ""
+                                }`}
+                              >
+                                <div className="flex items-center gap-3 flex-1 min-w-0">
+                                  <div className={`w-8 h-8 rounded-md flex items-center justify-center shrink-0 ${
+                                    p.metodo_entrega === "envio"
                                       ? "bg-blue-100 dark:bg-blue-900/30"
                                       : "bg-emerald-100 dark:bg-emerald-900/30"
-                                }`}>
-                                  {isOverdue ? (
-                                    <AlertTriangle className="w-4 h-4 text-red-600 dark:text-red-400" />
-                                  ) : p.metodo_entrega === "envio" ? (
-                                    <Truck className="w-4 h-4 text-blue-600 dark:text-blue-400" />
-                                  ) : (
-                                    <Store className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-                                  )}
-                                </div>
-                                <div className="min-w-0 flex-1">
-                                  <div className="flex items-center gap-2 flex-wrap">
-                                    <span className="font-semibold text-sm">#{p.numero}</span>
-                                    <span className="font-medium text-sm truncate">{p.nombre_cliente}</span>
-                                  </div>
-                                  <div className="flex items-center gap-2 mt-1 flex-wrap">
-                                    <Badge variant="outline" className="text-xs">
-                                      {p.metodo_entrega === "envio" ? "Envio" : "Retiro en local"}
-                                    </Badge>
-                                    <Badge variant="secondary" className="text-xs">
-                                      {p.metodo_pago || "—"}
-                                    </Badge>
-                                    {p.estado === "confirmado" && (
-                                      <Badge className="text-xs bg-blue-100 text-blue-700 hover:bg-blue-100 dark:bg-blue-900/30 dark:text-blue-400">
-                                        Confirmado
-                                      </Badge>
+                                  }`}>
+                                    {p.metodo_entrega === "envio" ? (
+                                      <Truck className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                                    ) : (
+                                      <Store className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
                                     )}
                                   </div>
+                                  <div className="min-w-0 flex-1">
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                      <span className="font-mono text-xs font-semibold text-muted-foreground">#{p.numero}</span>
+                                      <span className="font-medium text-sm truncate">{p.nombre_cliente}</span>
+                                      {p.estado === "confirmado" && (
+                                        <Badge className="text-[10px] px-1.5 py-0 bg-blue-100 text-blue-700 hover:bg-blue-100 dark:bg-blue-900/30 dark:text-blue-400">Confirmado</Badge>
+                                      )}
+                                    </div>
+                                    <div className="flex items-center gap-2 mt-0.5">
+                                      <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+                                        {p.metodo_entrega === "envio" ? "Envio" : "Retiro"}
+                                      </Badge>
+                                      <span className="text-xs text-muted-foreground flex items-center gap-1">
+                                        <Clock className="w-3 h-3" />{timeStr}
+                                      </span>
+                                    </div>
+                                  </div>
+                                </div>
+                                <div className="flex items-center gap-3 shrink-0">
+                                  <span className="font-bold text-sm">{formatCurrency(p.total)}</span>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-8 w-8"
+                                    onClick={() => handleViewPedido(p)}
+                                  >
+                                    <Eye className="w-4 h-4" />
+                                  </Button>
                                 </div>
                               </div>
-                              <div className="flex items-center gap-4 sm:gap-6 shrink-0">
-                                <div className="text-right">
-                                  <p className="font-bold text-sm">{formatCurrency(p.total)}</p>
-                                  <div className="flex items-center gap-1 justify-end mt-0.5">
-                                    <Calendar className="w-3 h-3 text-muted-foreground" />
-                                    <span className={`text-xs ${isOverdue ? "text-red-600 dark:text-red-400 font-medium" : "text-muted-foreground"}`}>
-                                      {p.fecha_entrega
-                                        ? new Date(p.fecha_entrega + "T12:00:00").toLocaleDateString("es-AR", { day: "2-digit", month: "2-digit" })
-                                        : "Sin fecha"}
-                                    </span>
-                                  </div>
-                                  <div className="flex items-center gap-1 justify-end mt-0.5">
-                                    <Clock className="w-3 h-3 text-muted-foreground" />
-                                    <span className="text-xs text-muted-foreground">{timeStr}</span>
-                                  </div>
-                                </div>
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  className="h-8 text-xs gap-1"
-                                  onClick={() => handleViewPedido(p)}
-                                >
-                                  <Eye className="w-3.5 h-3.5" />
-                                  Ver pedido
-                                </Button>
-                              </div>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  );
-                })()}
-              </CardContent>
-            </Card>
-          )}
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </CardContent>
+              </Card>
+            );
+          })()}
 
           {/* Charts */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
