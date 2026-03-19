@@ -98,7 +98,7 @@ export default function ReportesPage() {
       const ids = vts.map((v: any) => v.id);
       const { data: items } = await supabase
         .from("venta_items")
-        .select("venta_id, producto_id, descripcion, cantidad, precio_unitario, subtotal, unidades_por_presentacion, presentacion, productos(costo, nombre)")
+        .select("venta_id, producto_id, descripcion, cantidad, precio_unitario, descuento, subtotal, unidades_por_presentacion, presentacion, productos(costo, nombre)")
         .in("venta_id", ids);
       setVentaItems((items || []) as any[]);
     } else {
@@ -171,7 +171,9 @@ export default function ReportesPage() {
   const ganancia = useMemo(() => ventaItems.reduce((a, item: any) => {
     const costoU = item.productos?.costo || 0;
     const unidadesPres = getUnidadesPres(item);
-    return a + (item.precio_unitario - costoU * unidadesPres) * item.cantidad;
+    const descPct = Number(item.descuento) || 0;
+    const precioVenta = item.precio_unitario * (1 - descPct / 100);
+    return a + (precioVenta - costoU * unidadesPres) * item.cantidad;
   }, 0), [ventaItems]);
 
   const ventasPorPago = useMemo(() => {
@@ -213,7 +215,9 @@ export default function ReportesPage() {
     return ventaItems.filter((item) => filteredIds.has(item.venta_id)).reduce((a, item: any) => {
       const costoU = item.productos?.costo || 0;
       const unidadesPres = getUnidadesPres(item);
-      return a + (item.precio_unitario - costoU * unidadesPres) * item.cantidad;
+      const descPct = Number(item.descuento) || 0;
+      const precioVenta = item.precio_unitario * (1 - descPct / 100);
+      return a + (precioVenta - costoU * unidadesPres) * item.cantidad;
     }, 0);
   }, [filteredVentas, ventaItems]);
 
@@ -228,10 +232,11 @@ export default function ReportesPage() {
   const calcItemProfit = (item: VentaItemDetail) => {
     const costoU = item.productos?.costo || 0;
     let unidadesPres = Number(item.unidades_por_presentacion) || 1;
-    // Detect Medio Cartón: presentacion contains "medio" or unidades is 0.5
     const presTxt = ((item as any).presentacion || "").toLowerCase();
     if (presTxt.includes("medio") && unidadesPres === 1) unidadesPres = 0.5;
-    return (item.precio_unitario - costoU * unidadesPres) * item.cantidad;
+    const descPct = Number((item as any).descuento) || 0;
+    const precioVenta = item.precio_unitario * (1 - descPct / 100);
+    return (precioVenta - costoU * unidadesPres) * item.cantidad;
   };
 
   const calcVentaProfit = (ventaId: string) => {
@@ -447,8 +452,8 @@ export default function ReportesPage() {
                                   <tr className="text-muted-foreground border-b border-muted">
                                     <th className="text-left py-1.5 px-4 pl-12 font-medium">Producto</th>
                                     <th className="text-center py-1.5 px-3 font-medium">Cant.</th>
-                                    <th className="text-right py-1.5 px-3 font-medium">Precio Unit.</th>
-                                    <th className="text-right py-1.5 px-3 font-medium">Costo Unit.</th>
+                                    <th className="text-right py-1.5 px-3 font-medium">Precio Venta</th>
+                                    <th className="text-right py-1.5 px-3 font-medium">Costo</th>
                                     <th className="text-right py-1.5 px-3 font-medium">Subtotal</th>
                                     <th className="text-right py-1.5 px-3 font-medium">Ganancia</th>
                                   </tr>
@@ -458,11 +463,16 @@ export default function ReportesPage() {
                                     const itemProfit = calcItemProfit(item);
                                     const costoU = item.productos?.costo || 0;
                                     const unidadesPres = getUnidadesPres(item);
+                                    const descPct = Number((item as any).descuento) || 0;
+                                    const precioVenta = item.precio_unitario * (1 - descPct / 100);
                                     return (
                                       <tr key={idx} className="border-b border-muted/50 last:border-0">
-                                        <td className="py-1.5 px-4 pl-12">{item.productos?.nombre || item.descripcion}</td>
+                                        <td className="py-1.5 px-4 pl-12">
+                                          {item.productos?.nombre || item.descripcion}
+                                          {descPct > 0 && <span className="ml-1 text-[10px] text-orange-600">(-{descPct}%)</span>}
+                                        </td>
                                         <td className="py-1.5 px-3 text-center">{item.cantidad}</td>
-                                        <td className="py-1.5 px-3 text-right">{fc(item.precio_unitario)}</td>
+                                        <td className="py-1.5 px-3 text-right">{fc(precioVenta)}</td>
                                         <td className="py-1.5 px-3 text-right text-muted-foreground">{fc(costoU * unidadesPres)}</td>
                                         <td className="py-1.5 px-3 text-right">{fc(item.subtotal)}</td>
                                         <td className={`py-1.5 px-3 text-right font-medium ${itemProfit >= 0 ? "text-emerald-600" : "text-red-500"}`}>

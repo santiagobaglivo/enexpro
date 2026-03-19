@@ -1538,7 +1538,21 @@ export default function VentasPage() {
                               {item.presentacion} ({item.unidades_por_presentacion} un.)
                             </Badge>
                           )}
-                          {/* Removed "= 1 Caja" equivalence badge - was confusing */}
+                          {item.presentacion === "Unidad" && (() => {
+                            const pres = presentacionesMap[item.producto_id] || [];
+                            const boxPres = pres.find((p) => Number(p.cantidad) > 1);
+                            if (!boxPres) return null;
+                            const boxQty = Number(boxPres.cantidad);
+                            if (item.qty >= boxQty && item.qty % boxQty === 0) {
+                              const numCajas = item.qty / boxQty;
+                              return (
+                                <Badge variant="secondary" className="mt-1 text-[10px] bg-indigo-50 text-indigo-600 border-indigo-200">
+                                  = {numCajas} {numCajas === 1 ? boxPres.nombre : (boxPres.nombre.replace(/^Caja/, "Cajas"))}
+                                </Badge>
+                              );
+                            }
+                            return null;
+                          })()}
                         </div>
                         <div className="flex items-center gap-0.5 lg:gap-1">
                           <Button
