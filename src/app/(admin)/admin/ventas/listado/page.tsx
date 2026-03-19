@@ -57,6 +57,7 @@ interface VentaRow {
   numero: string;
   tipo_comprobante: string;
   fecha: string;
+  created_at: string;
   forma_pago: string;
   moneda: string;
   subtotal: number;
@@ -123,6 +124,25 @@ export default function ListadoVentasPage() {
   const [detailItems, setDetailItems] = useState<VentaItemRow[]>([]);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
 
+  // Track printed remitos client-side
+  const [printedIds, setPrintedIds] = useState<Set<string>>(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const stored = localStorage.getItem("printed_remitos");
+        if (stored) return new Set(JSON.parse(stored));
+      } catch {}
+    }
+    return new Set();
+  });
+  const markAsPrinted = (id: string) => {
+    setPrintedIds((prev) => {
+      const next = new Set(prev);
+      next.add(id);
+      localStorage.setItem("printed_remitos", JSON.stringify([...next]));
+      return next;
+    });
+  };
+
   // Print
   const [empresa, setEmpresa] = useState<Empresa | null>(null);
   const [vendedores, setVendedores] = useState<{ id: string; nombre: string }[]>([]);
@@ -138,7 +158,7 @@ export default function ListadoVentasPage() {
     setLoading(true);
     let query = supabase
       .from("ventas")
-      .select("*, clientes(id, nombre, cuit, tipo_factura, domicilio, telefono, situacion_iva, localidad, provincia, codigo_postal, numero_documento)")
+      .select("*, created_at, clientes(id, nombre, cuit, tipo_factura, domicilio, telefono, situacion_iva, localidad, provincia, codigo_postal, numero_documento)")
       .order("fecha", { ascending: false })
       .order("created_at", { ascending: false });
 
@@ -255,6 +275,7 @@ export default function ListadoVentasPage() {
     setPrintItems(items);
     setPrintLineItems(lineItems);
     setPrintReady(true);
+    markAsPrinted(v.id);
   };
 
   useEffect(() => {
@@ -453,7 +474,7 @@ export default function ListadoVentasPage() {
                     <th className="text-left py-3 px-4 font-medium">Origen</th>
                     <th className="text-left py-3 px-4 font-medium">Tipo</th>
                     <th className="text-left py-3 px-4 font-medium">N°</th>
-                    <th className="text-left py-3 px-4 font-medium">Fecha</th>
+                    <th className="text-left py-3 px-4 font-medium">Fecha / Hora</th>
                     <th className="text-left py-3 px-4 font-medium">Cliente</th>
                     <th className="text-left py-3 px-4 font-medium">Forma pago</th>
                     <th className="text-center py-3 px-4 font-medium">Entrega</th>
@@ -475,7 +496,14 @@ export default function ListadoVentasPage() {
                         </Badge>
                       </td>
                       <td className="py-3 px-4 font-mono text-xs text-muted-foreground">{v.numero}</td>
-                      <td className="py-3 px-4 text-muted-foreground">{new Date(v.fecha + "T12:00:00").toLocaleDateString("es-AR")}</td>
+                      <td className="py-3 px-4 text-muted-foreground">
+                        <div>{new Date(v.fecha + "T12:00:00").toLocaleDateString("es-AR")}</div>
+                        {v.created_at && (
+                          <div className="text-xs text-muted-foreground/70">
+                            {new Date(v.created_at).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit", timeZone: "America/Argentina/Buenos_Aires" })}
+                          </div>
+                        )}
+                      </td>
                       <td className="py-3 px-4 font-medium">{v.clientes?.nombre || "—"}</td>
                       <td className="py-3 px-4">
                         <Badge variant="outline" className="text-xs font-normal">{v.forma_pago}</Badge>
@@ -497,8 +525,9 @@ export default function ListadoVentasPage() {
                           <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openDetail(v)} title="Ver detalle">
                             <Eye className="w-3.5 h-3.5" />
                           </Button>
-                          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => preparePrint(v)} title="Imprimir">
+                          <Button variant="ghost" size="icon" className={`h-8 w-8 relative ${printedIds.has(v.id) ? "text-green-600" : ""}`} onClick={() => preparePrint(v)} title={printedIds.has(v.id) ? "Impreso - Reimprimir" : "Imprimir"}>
                             <Printer className="w-3.5 h-3.5" />
+                            {printedIds.has(v.id) && <CheckCircle className="w-2.5 h-2.5 absolute -top-0.5 -right-0.5 text-green-600" />}
                           </Button>
                           {!v.entregado && !v.tipo_comprobante.includes("Nota de Crédito") && (
                             <Button

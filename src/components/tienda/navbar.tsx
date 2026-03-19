@@ -27,7 +27,7 @@ export default function TiendaNavbar() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [mobileQuery, setMobileQuery] = useState("");
-  const { openCart, itemCount } = useCart();
+  const { openCart, itemCount, subtotal } = useCart();
   const router = useRouter();
   const categoryBarRef = useRef<HTMLDivElement>(null);
 
@@ -168,6 +168,11 @@ export default function TiendaNavbar() {
               <span className="hidden text-sm font-medium lg:inline">
                 Carrito
               </span>
+              {subtotal > 0 && (
+                <span suppressHydrationWarning className="hidden lg:inline text-xs font-semibold text-pink-600 ml-0.5">
+                  {new Intl.NumberFormat("es-AR", { style: "currency", currency: "ARS", minimumFractionDigits: 0 }).format(subtotal)}
+                </span>
+              )}
             </button>
           </div>
         </div>

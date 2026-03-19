@@ -35,6 +35,7 @@ import {
   Loader2,
   ArrowUp,
   ArrowDown,
+  Globe,
 } from "lucide-react";
 
 interface ClienteInfo {
@@ -101,6 +102,18 @@ export default function HojaDeRutaPage() {
   const [filterEntrega, setFilterEntrega] = useState<"todos" | "envio" | "retiro">("todos");
   const [search, setSearch] = useState("");
   const [showAllPending, setShowAllPending] = useState(true);
+
+  // Pending web orders (pedidos_tienda)
+  const [pedidosWeb, setPedidosWeb] = useState<{ id: string; numero: string; nombre_cliente: string; fecha_entrega: string; total: number; metodo_entrega: string; metodo_pago: string; created_at: string }[]>([]);
+
+  useEffect(() => {
+    supabase
+      .from("pedidos_tienda")
+      .select("id, numero, nombre_cliente, fecha_entrega, total, metodo_entrega, metodo_pago, created_at")
+      .eq("estado", "pendiente")
+      .order("fecha_entrega", { ascending: true })
+      .then(({ data }) => setPedidosWeb(data || []));
+  }, []);
 
   // Track how much was actually paid per order (from caja_movimientos)
   const [pagadoPorVenta, setPagadoPorVenta] = useState<Record<string, number>>({});
@@ -485,6 +498,46 @@ export default function HojaDeRutaPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Pending Web Orders */}
+      {pedidosWeb.length > 0 && (
+        <Card className="border-pink-200 bg-pink-50/50">
+          <CardContent className="p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <Globe className="w-5 h-5 text-pink-600" />
+              <h3 className="font-semibold text-gray-900">Pedidos Web Pendientes</h3>
+              <Badge variant="secondary" className="bg-pink-100 text-pink-700 text-xs">{pedidosWeb.length}</Badge>
+            </div>
+            <div className="space-y-2">
+              {pedidosWeb.map((p) => (
+                <div key={p.id} className="flex items-center justify-between bg-white rounded-lg px-4 py-3 border border-pink-100">
+                  <div className="flex items-center gap-4">
+                    <div>
+                      <span className="font-mono text-xs font-semibold text-gray-700">{p.numero}</span>
+                      <div className="text-sm font-medium text-gray-900">{p.nombre_cliente}</div>
+                    </div>
+                    <Badge variant="outline" className="text-xs border-pink-300 text-pink-600">
+                      {p.metodo_entrega === "envio" ? "Envio" : "Retiro"}
+                    </Badge>
+                    <span className="text-xs text-gray-500">{p.metodo_pago}</span>
+                  </div>
+                  <div className="flex items-center gap-4">
+                    <div className="text-right">
+                      <div className="text-xs text-gray-500">Entrega</div>
+                      <div className="text-sm font-medium text-gray-900">
+                        {p.fecha_entrega ? new Date(p.fecha_entrega + "T12:00:00").toLocaleDateString("es-AR", { weekday: "short", day: "numeric", month: "short" }) : "Sin fecha"}
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className="font-semibold text-gray-900">{formatCurrency(p.total)}</div>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Orders Table */}
       <Card>
