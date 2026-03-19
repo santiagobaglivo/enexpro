@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { User, Package, MapPin, LogOut, AlertCircle } from "lucide-react";
+import { User, Package, LogOut, AlertCircle, ChevronRight } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 
 const PROVINCIAS = [
@@ -419,80 +419,73 @@ export default function CuentaPage() {
     .toUpperCase()
     .slice(0, 2);
 
-  const cards = [
-    {
-      title: "Mis Pedidos",
-      desc: orderCount > 0 ? `${orderCount} ${orderCount === 1 ? "pedido" : "pedidos"}` : "Historial de compras",
-      href: "/cuenta/pedidos",
-      icon: Package,
-      iconBg: "bg-pink-50",
-      iconColor: "text-pink-600",
-    },
-    {
-      title: "Mis Direcciones",
-      desc: "Direcciones de envío",
-      href: "/cuenta/direcciones",
-      icon: MapPin,
-      iconBg: "bg-blue-50",
-      iconColor: "text-blue-600",
-    },
-    {
-      title: "Mi Perfil",
-      desc: "Datos personales",
-      href: "/cuenta/perfil",
-      icon: User,
-      iconBg: "bg-purple-50",
-      iconColor: "text-purple-600",
-    },
-  ];
-
   return (
-    <div className="max-w-4xl mx-auto px-4 py-8">
-      {/* Welcome banner */}
-      <div className="bg-gradient-to-r from-pink-600 to-pink-500 rounded-2xl p-6 md:p-8 mb-8 text-white">
+    <div className="max-w-2xl mx-auto px-4 py-8">
+      {/* Welcome header */}
+      <div className="mb-8">
         <div className="flex items-center gap-4">
-          <div className="w-14 h-14 rounded-full bg-white/20 backdrop-blur-sm flex items-center justify-center text-xl font-bold shrink-0">
+          <div className="w-14 h-14 rounded-full bg-gradient-to-br from-pink-600 to-pink-400 flex items-center justify-center text-white text-xl font-bold shrink-0">
             {initials}
           </div>
           <div className="min-w-0">
-            <h1 className="text-2xl font-bold truncate">
-              Hola, {cliente.nombre}!
+            <h1 className="text-2xl font-bold text-gray-900 truncate">
+              Hola, {cliente.nombre.split(" ")[0]}
             </h1>
-            <p className="text-pink-100 text-sm mt-0.5">{cliente.email}</p>
+            <p className="text-gray-400 text-sm mt-0.5">{cliente.email}</p>
           </div>
         </div>
       </div>
 
-      {/* Cards grid */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        {cards.map((card) => (
-          <Link
-            key={card.href}
-            href={card.href}
-            className="bg-white rounded-2xl border border-gray-100 hover:shadow-lg hover:border-pink-200 transition-all duration-200 p-6 group"
-          >
-            <div className={`w-12 h-12 ${card.iconBg} rounded-xl flex items-center justify-center mb-4`}>
-              <card.icon className={`w-6 h-6 ${card.iconColor}`} />
+      {/* Navigation links */}
+      <div className="space-y-3">
+        <Link
+          href="/cuenta/perfil"
+          className="flex items-center justify-between bg-white rounded-2xl border border-gray-100 hover:border-pink-200 hover:shadow-md transition-all duration-200 p-5 group"
+        >
+          <div className="flex items-center gap-4">
+            <div className="w-11 h-11 bg-purple-50 rounded-xl flex items-center justify-center">
+              <User className="w-5 h-5 text-purple-600" />
             </div>
-            <h2 className="font-semibold text-gray-900 group-hover:text-pink-600 transition-colors">
-              {card.title}
-            </h2>
-            <p className="text-gray-400 text-sm mt-1">{card.desc}</p>
-          </Link>
-        ))}
+            <div>
+              <h2 className="font-semibold text-gray-900 group-hover:text-pink-600 transition-colors">Mi Perfil</h2>
+              <p className="text-gray-400 text-sm">Datos personales, dirección y contraseña</p>
+            </div>
+          </div>
+          <ChevronRight className="w-5 h-5 text-gray-300 group-hover:text-pink-400 transition-colors" />
+        </Link>
 
-        {/* Logout card */}
+        <Link
+          href="/cuenta/pedidos"
+          className="flex items-center justify-between bg-white rounded-2xl border border-gray-100 hover:border-pink-200 hover:shadow-md transition-all duration-200 p-5 group"
+        >
+          <div className="flex items-center gap-4">
+            <div className="w-11 h-11 bg-pink-50 rounded-xl flex items-center justify-center">
+              <Package className="w-5 h-5 text-pink-600" />
+            </div>
+            <div>
+              <h2 className="font-semibold text-gray-900 group-hover:text-pink-600 transition-colors">Mis Pedidos</h2>
+              <p className="text-gray-400 text-sm">
+                {orderCount > 0 ? `${orderCount} ${orderCount === 1 ? "pedido" : "pedidos"} realizados` : "Historial de compras"}
+              </p>
+            </div>
+          </div>
+          <ChevronRight className="w-5 h-5 text-gray-300 group-hover:text-pink-400 transition-colors" />
+        </Link>
+
         <button
           onClick={handleLogout}
-          className="bg-white rounded-2xl border border-gray-100 hover:shadow-lg hover:border-red-200 transition-all duration-200 p-6 text-left group"
+          className="w-full flex items-center justify-between bg-white rounded-2xl border border-gray-100 hover:border-red-200 hover:shadow-md transition-all duration-200 p-5 group text-left"
         >
-          <div className="w-12 h-12 bg-red-50 rounded-xl flex items-center justify-center mb-4">
-            <LogOut className="w-6 h-6 text-red-500" />
+          <div className="flex items-center gap-4">
+            <div className="w-11 h-11 bg-red-50 rounded-xl flex items-center justify-center">
+              <LogOut className="w-5 h-5 text-red-500" />
+            </div>
+            <div>
+              <h2 className="font-semibold text-gray-900 group-hover:text-red-500 transition-colors">Cerrar sesión</h2>
+              <p className="text-gray-400 text-sm">Salir de tu cuenta</p>
+            </div>
           </div>
-          <h2 className="font-semibold text-gray-900 group-hover:text-red-500 transition-colors">
-            Cerrar sesión
-          </h2>
-          <p className="text-gray-400 text-sm mt-1">Salir de tu cuenta</p>
+          <ChevronRight className="w-5 h-5 text-gray-300 group-hover:text-red-400 transition-colors" />
         </button>
       </div>
     </div>

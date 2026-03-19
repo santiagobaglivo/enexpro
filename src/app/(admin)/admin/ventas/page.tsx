@@ -559,8 +559,8 @@ export default function VentasPage() {
           }
         }
 
-        // Check auto-switch: units → box
-        if (checkSwitch && i.producto_id && i.presentacion === "Unidad") {
+        // Check auto-switch: units → box (always check, not just when checkSwitch is true)
+        if (i.producto_id && i.presentacion === "Unidad") {
           const pres = presentacionesMap[i.producto_id] || [];
           const match = pres.find((p) => Number(p.cantidad) === qty && p.nombre !== "Unidad" && Number(p.cantidad) > 1);
           if (match) {

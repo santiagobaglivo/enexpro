@@ -97,7 +97,7 @@ interface CuentaMovimiento {
 
 export default function ClientesPage() {
   const router = useRouter();
-  const [activeTab, setActiveTab] = useState<"listado" | "cobranzas">("listado");
+  const [activeTab, setActiveTab] = useState<"listado" | "cobranzas" | "zonas">("listado");
   const [clients, setClients] = useState<Cliente[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -115,6 +115,12 @@ export default function ClientesPage() {
   const [authEmail, setAuthEmail] = useState<string | null>(null);
   const [authId, setAuthId] = useState<string | null>(null);
   const [zonas, setZonas] = useState<ZonaEntrega[]>([]);
+
+  // Zonas management
+  const [zonaDialogOpen, setZonaDialogOpen] = useState(false);
+  const [editingZona, setEditingZona] = useState<ZonaEntrega | null>(null);
+  const [zonaForm, setZonaForm] = useState<{ nombre: string; dias: string[] }>({ nombre: "", dias: [] });
+  const [zonaSaving, setZonaSaving] = useState(false);
 
   // Movements
   const [movClient, setMovClient] = useState<Cliente | null>(null);
@@ -165,6 +171,32 @@ export default function ClientesPage() {
     const { data } = await supabase.from("zonas_entrega").select("*").order("nombre");
     setZonas((data || []) as ZonaEntrega[]);
   }, []);
+
+  const openNewZona = () => { setEditingZona(null); setZonaForm({ nombre: "", dias: [] }); setZonaDialogOpen(true); };
+  const openEditZona = (z: ZonaEntrega) => { setEditingZona(z); setZonaForm({ nombre: z.nombre, dias: [...z.dias] }); setZonaDialogOpen(true); };
+  const toggleZonaDia = (dia: string) => {
+    setZonaForm((prev) => ({
+      ...prev,
+      dias: prev.dias.includes(dia) ? prev.dias.filter((d) => d !== dia) : [...prev.dias, dia],
+    }));
+  };
+  const handleSaveZona = async () => {
+    if (!zonaForm.nombre.trim()) return;
+    setZonaSaving(true);
+    if (editingZona) {
+      await supabase.from("zonas_entrega").update({ nombre: zonaForm.nombre, dias: zonaForm.dias }).eq("id", editingZona.id);
+    } else {
+      await supabase.from("zonas_entrega").insert({ nombre: zonaForm.nombre, dias: zonaForm.dias });
+    }
+    setZonaSaving(false);
+    setZonaDialogOpen(false);
+    fetchZonas();
+  };
+  const handleDeleteZona = async (id: string) => {
+    if (!confirm("Eliminar esta zona de entrega?")) return;
+    await supabase.from("zonas_entrega").delete().eq("id", id);
+    fetchZonas();
+  };
 
   useEffect(() => {
     fetchClients();
@@ -567,6 +599,12 @@ export default function ClientesPage() {
         >
           <DollarSign className="w-4 h-4 inline mr-2" />Cobranzas
         </button>
+        <button
+          onClick={() => setActiveTab("zonas")}
+          className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${activeTab === "zonas" ? "bg-background shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+        >
+          <MapPin className="w-4 h-4 inline mr-2" />Zonas de entrega
+        </button>
       </div>
 
       {activeTab === "listado" && (
@@ -841,6 +879,101 @@ export default function ClientesPage() {
           </Card>
         </>
       )}
+
+      {activeTab === "zonas" && (
+        <>
+          <Card>
+            <CardContent className="pt-6">
+              <div className="flex items-center justify-between mb-6">
+                <div>
+                  <h2 className="text-lg font-semibold">Zonas de entrega</h2>
+                  <p className="text-sm text-muted-foreground">{zonas.length} zonas configuradas</p>
+                </div>
+                <Button onClick={openNewZona}><Plus className="w-4 h-4 mr-2" />Nueva zona</Button>
+              </div>
+              {zonas.length === 0 ? (
+                <div className="text-center py-12 text-muted-foreground">
+                  <MapPin className="w-8 h-8 mx-auto mb-2 opacity-30" />
+                  <p className="text-sm">No hay zonas de entrega configuradas</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {zonas.map((z) => (
+                    <div key={z.id} className="flex items-center justify-between p-4 rounded-xl border hover:bg-muted/50 transition-colors">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2">
+                          <MapPin className="w-4 h-4 text-blue-600" />
+                          <span className="font-medium">{z.nombre}</span>
+                          <Badge variant="secondary" className="text-xs">{clients.filter((c) => c.zona_entrega === z.id).length} clientes</Badge>
+                        </div>
+                        <div className="flex gap-1.5 mt-2">
+                          {DIAS_SEMANA.map((dia) => (
+                            <span
+                              key={dia}
+                              className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                                z.dias.includes(dia)
+                                  ? "bg-blue-100 text-blue-700"
+                                  : "bg-gray-100 text-gray-400"
+                              }`}
+                            >
+                              {dia.substring(0, 3)}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="flex gap-1">
+                        <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEditZona(z)}><Edit className="w-3.5 h-3.5" /></Button>
+                        <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-destructive" onClick={() => handleDeleteZona(z.id)}><Trash2 className="w-3.5 h-3.5" /></Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </>
+      )}
+
+      {/* Zona Dialog */}
+      <Dialog open={zonaDialogOpen} onOpenChange={setZonaDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{editingZona ? "Editar zona" : "Nueva zona de entrega"}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 mt-2">
+            <div className="space-y-2">
+              <Label>Nombre de la zona</Label>
+              <Input value={zonaForm.nombre} onChange={(e) => setZonaForm({ ...zonaForm, nombre: e.target.value })} placeholder="Ej: Zona Norte" />
+            </div>
+            <div className="space-y-2">
+              <Label>Días de entrega</Label>
+              <div className="flex flex-wrap gap-2">
+                {DIAS_SEMANA.map((dia) => (
+                  <button
+                    key={dia}
+                    type="button"
+                    onClick={() => toggleZonaDia(dia)}
+                    className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-all ${
+                      zonaForm.dias.includes(dia)
+                        ? "bg-blue-600 text-white border-blue-600"
+                        : "bg-white text-gray-600 border-gray-200 hover:border-gray-400"
+                    }`}
+                  >
+                    {dia}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="outline" onClick={() => setZonaDialogOpen(false)}>Cancelar</Button>
+              <Button onClick={handleSaveZona} disabled={zonaSaving || !zonaForm.nombre.trim()}>
+                {zonaSaving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+                {editingZona ? "Guardar cambios" : "Crear zona"}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Movements Dialog */}
       <Dialog open={movOpen} onOpenChange={setMovOpen}>

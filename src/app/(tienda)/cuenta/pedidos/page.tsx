@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { ArrowLeft, Package, ChevronDown, ChevronUp, Calendar, Hash, AlertCircle, ShoppingBag, DollarSign } from "lucide-react";
+import { ArrowLeft, Package, ChevronDown, ChevronUp, Calendar, Hash, AlertCircle, ShoppingBag, DollarSign, Globe, Store } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 
 interface PedidoItem {
@@ -73,6 +73,7 @@ export default function PedidosPage() {
   const [ventasPOS, setVentasPOS] = useState<VentaRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<"web" | "local">("web");
 
   useEffect(() => {
     const fetchData = async () => {
@@ -236,6 +237,465 @@ export default function PedidosPage() {
     return `${datePart}, ${timePart}`;
   };
 
+  // Debt summary component
+  const DebtSummary = () => {
+    const deudasPedidos = pedidos.filter((p) => p.venta && p.venta.saldo_pendiente > 0).map((p) => ({ numero: p.venta!.numero, tipo: p.venta!.tipo_comprobante, monto: p.venta!.saldo_pendiente }));
+    const deudasPOS = ventasPOS.filter((v) => v.saldo_pendiente > 0).map((v) => ({ numero: v.numero, tipo: v.tipo_comprobante, monto: v.saldo_pendiente }));
+    const deudas = [...deudasPedidos, ...deudasPOS];
+    const totalDeuda = deudas.reduce((s, d) => s + d.monto, 0);
+    if (totalDeuda <= 0) return null;
+    return (
+      <div className="mb-6 bg-gradient-to-r from-orange-50 to-amber-50 border border-orange-200 rounded-2xl p-5">
+        <div className="flex items-center gap-2 mb-3">
+          <DollarSign className="w-5 h-5 text-orange-600" />
+          <span className="font-bold text-orange-800">Saldo pendiente: {formatPrice(totalDeuda)}</span>
+        </div>
+        <div className="space-y-1.5">
+          {deudas.map((d) => (
+            <div key={d.numero} className="flex justify-between items-center text-sm">
+              <span className="text-orange-700">{d.tipo} {d.numero}</span>
+              <span className="font-semibold text-orange-800">{formatPrice(d.monto)}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
+  // Render a pedido web card
+  const renderPedido = (pedido: Pedido) => {
+    const badge = estadoBadge[pedido.estado] || { bg: "bg-gray-50", text: "text-gray-700", dot: "bg-gray-400" };
+    const isExpanded = expanded === `pedido-${pedido.id}`;
+
+    return (
+      <div
+        key={pedido.id}
+        className={`bg-white rounded-2xl border transition-all duration-200 ${
+          isExpanded ? "border-pink-200 shadow-lg" : "border-gray-100 hover:border-gray-200"
+        }`}
+      >
+        <button
+          onClick={() => setExpanded(isExpanded ? null : `pedido-${pedido.id}`)}
+          className="w-full text-left p-5 md:p-6"
+        >
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-3 flex-wrap mb-2">
+                <div className="flex items-center gap-1.5 text-gray-900">
+                  <Hash className="w-3.5 h-3.5 text-gray-400" />
+                  <span className="font-mono font-semibold text-sm">{pedido.numero}</span>
+                </div>
+                <span className={`inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full ${badge.bg} ${badge.text}`}>
+                  <span className={`w-1.5 h-1.5 rounded-full ${badge.dot}`} />
+                  <span className="capitalize">{pedido.estado}</span>
+                </span>
+                {pedido.venta?.notas_credito && pedido.venta.notas_credito.length > 0 && (
+                  <span className="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full bg-red-50 text-red-600">
+                    <AlertCircle className="w-3 h-3" />
+                    NC
+                  </span>
+                )}
+                {pedido.venta && pedido.venta.saldo_pendiente > 0 && (
+                  <span className="inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-full bg-orange-50 text-orange-700 border border-orange-200">
+                    <DollarSign className="w-3 h-3" />
+                    Saldo pendiente: {formatPrice(pedido.venta.saldo_pendiente)}
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-3 text-sm text-gray-400">
+                <span className="flex items-center gap-1.5">
+                  <Calendar className="w-3.5 h-3.5" />
+                  {formatDate(pedido.created_at, true)}
+                </span>
+                <span className="text-gray-200">|</span>
+                <span>
+                  {pedido.items.length} {pedido.items.length === 1 ? "producto" : "productos"}
+                </span>
+              </div>
+            </div>
+            <div className="flex items-center gap-3 shrink-0">
+              <div className="text-right">
+                {pedido.venta?.notas_credito && pedido.venta.notas_credito.length > 0 ? (
+                  <>
+                    <span className="text-sm text-gray-400 line-through">{formatPrice(pedido.total)}</span>
+                    <span className="text-lg font-bold text-pink-600 ml-1">
+                      {formatPrice(pedido.total - pedido.venta.notas_credito.reduce((s, nc) => s + nc.total, 0))}
+                    </span>
+                  </>
+                ) : (
+                  <span className="text-lg font-bold text-gray-900">{formatPrice(pedido.total)}</span>
+                )}
+              </div>
+              <div className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${
+                isExpanded ? "bg-pink-50" : "bg-gray-50"
+              }`}>
+                {isExpanded ? (
+                  <ChevronUp className={`w-4 h-4 ${isExpanded ? "text-pink-600" : "text-gray-400"}`} />
+                ) : (
+                  <ChevronDown className="w-4 h-4 text-gray-400" />
+                )}
+              </div>
+            </div>
+          </div>
+        </button>
+
+        {isExpanded && (
+          <div className="border-t border-gray-100 mx-5 md:mx-6">
+            {pedido.items.length > 0 && (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-xs text-gray-400 uppercase tracking-wider">
+                    <th className="py-3 text-left font-medium">Producto</th>
+                    <th className="py-3 text-center font-medium">Cant.</th>
+                    <th className="py-3 text-right font-medium">Precio</th>
+                    <th className="py-3 text-right font-medium">Subtotal</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pedido.items.map((item) => {
+                    const isMedio = item.presentacion && (item.presentacion.toLowerCase().includes("medio") || (item.unidades_por_presentacion != null && item.unidades_por_presentacion <= 0.5 && item.unidades_por_presentacion > 0));
+                    const isBox = item.presentacion && item.presentacion !== "Unidad" && (item.unidades_por_presentacion || 1) > 1;
+                    const isCombo = item.nombre.toLowerCase().includes("combo");
+                    const unitPrice = isMedio ? item.precio_unitario / (item.unidades_por_presentacion || 0.5) : isBox ? item.precio_unitario / (item.unidades_por_presentacion || 1) : item.precio_unitario;
+                    let displayName = item.nombre
+                      .replace(/\s*[-–]\s*Unidad(\s*\(Unidad\))?$/, "")
+                      .replace(/\s*\(Unidad\)$/, "")
+                      .replace(/(\([^)]+\))\s*\1/gi, "$1")
+                      .replace(/Caja\s*\(?x?0\.5\)?/gi, "Medio Cartón")
+                      .replace(/(Medio\s*Cart[oó]n)\s*\(?\s*Medio\s*Cart[oó]n\s*\)?/gi, "$1");
+                    const nameAlreadyHasPres = (isBox || isMedio) && displayName.toLowerCase().includes(isMedio ? "medio" : item.presentacion.toLowerCase());
+                    if (isBox && !nameAlreadyHasPres) {
+                      const presClean = item.presentacion.replace(/\s*\([^)]*\)\s*$/, "");
+                      displayName = `${displayName} (${presClean})`;
+                    }
+                    return (
+                    <tr key={item.id} className="border-t border-gray-50">
+                      <td className="py-3 text-gray-700 font-medium">
+                        {displayName}
+                        {isCombo && (item.unidades_por_presentacion || 1) > 1 && (
+                          <span className="block text-[10px] text-gray-400 mt-0.5">
+                            Combo de {item.unidades_por_presentacion} unidades
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-3 text-center text-gray-500">{isMedio ? item.cantidad * (item.unidades_por_presentacion || 0.5) : item.cantidad}</td>
+                      <td className="py-3 text-right text-gray-500">
+                        {formatPrice(unitPrice)}
+                        {(isBox || isCombo) && (item.unidades_por_presentacion || 1) > 1 && <span className="block text-[10px] text-gray-400">c/u</span>}
+                      </td>
+                      <td className="py-3 text-right font-semibold text-gray-900">
+                        {formatPrice(item.precio_unitario * item.cantidad)}
+                      </td>
+                    </tr>
+                    );
+                  })}
+                </tbody>
+                <tfoot>
+                  <tr className="border-t border-gray-200">
+                    <td colSpan={3} className="py-3 text-right font-semibold text-gray-500 text-xs uppercase tracking-wider">
+                      Total
+                    </td>
+                    <td className="py-3 text-right font-bold text-pink-600 text-base">
+                      {formatPrice(pedido.total)}
+                    </td>
+                  </tr>
+                </tfoot>
+              </table>
+            )}
+
+            {/* Payment breakdown */}
+            {pedido.venta && pedido.venta.pagos.length > 0 && (() => {
+              const pagos = pedido.venta.saldo_pendiente <= 0
+                ? pedido.venta.pagos.filter((p) => p.metodo_pago !== "Cuenta Corriente")
+                : pedido.venta.pagos;
+              if (pagos.length === 0) return null;
+              return (
+              <div className="mt-3 bg-gray-50 rounded-xl p-4">
+                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Detalle de pago</p>
+                <div className="space-y-2">
+                  {pagos.map((p, idx) => {
+                    const isHojaRuta = p.descripcion && (p.descripcion.toLowerCase().includes("hoja de ruta") || p.descripcion.toLowerCase().includes("entrega"));
+                    const isCobro = p.descripcion && p.descripcion.toLowerCase().includes("cobro");
+                    return (
+                    <div key={idx} className="flex justify-between items-start text-sm">
+                      <div>
+                        <span className="text-gray-700 font-medium">{p.metodo_pago}</span>
+                        {p.cuenta_bancaria && <span className="text-gray-400 text-xs ml-1">→ {p.cuenta_bancaria}</span>}
+                        {p.fecha && (
+                          <span className="block text-[10px] text-gray-400 mt-0.5">
+                            {new Date(p.fecha).toLocaleDateString("es-AR", { day: "numeric", month: "short", year: "numeric" })}{" "}
+                            {new Date(p.fecha).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit", hour12: false })}
+                            {isHojaRuta ? " — Pago al momento de entrega" : isCobro ? " — Cobro posterior" : ""}
+                          </span>
+                        )}
+                      </div>
+                      <span className="font-semibold text-gray-900">{formatPrice(p.monto)}</span>
+                    </div>
+                    );
+                  })}
+                </div>
+                {pedido.venta.saldo_pendiente > 0 && (
+                  <div className="mt-2 pt-2 border-t border-orange-200 flex justify-between text-sm">
+                    <span className="text-orange-600 font-medium">Saldo pendiente</span>
+                    <span className="font-bold text-orange-600">{formatPrice(pedido.venta.saldo_pendiente)}</span>
+                  </div>
+                )}
+              </div>
+              );
+            })()}
+            {pedido.venta && pedido.venta.pagos.length === 0 && pedido.venta.forma_pago && (
+              <div className="mt-3 bg-gray-50 rounded-xl p-4">
+                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Forma de pago</p>
+                <p className="text-sm text-gray-700">{pedido.venta.forma_pago}</p>
+              </div>
+            )}
+
+            {/* Notas de crédito */}
+            {pedido.venta?.notas_credito && pedido.venta.notas_credito.length > 0 && (
+              <div className="mt-3 mb-4">
+                {pedido.venta.notas_credito.map((nc) => (
+                  <div key={nc.id} className="bg-red-50 rounded-xl p-4 mt-2">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        <AlertCircle className="w-4 h-4 text-red-500" />
+                        <span className="text-sm font-semibold text-red-700">Nota de Crédito</span>
+                        <span className="text-xs text-red-500 font-mono">{nc.numero}</span>
+                      </div>
+                      <span className="text-sm font-bold text-red-600">-{formatPrice(nc.total)}</span>
+                    </div>
+                    {nc.items.length > 0 && (
+                      <div className="space-y-1">
+                        {nc.items.map((ni, idx) => (
+                          <div key={idx} className="flex justify-between text-xs text-red-600">
+                            <span>{ni.cantidad}x {ni.descripcion.replace(/\s*[-–]\s*Unidad(\s*\(Unidad\))?$/, "").replace(/\s*\(Unidad\)$/, "").replace(/(\([^)]+\))\s*\1/gi, "$1")}</span>
+                            <span>-{formatPrice(ni.subtotal)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+                <div className="flex justify-between items-center mt-3 pt-3 border-t border-red-200">
+                  <span className="text-sm font-semibold text-gray-700">Total final</span>
+                  <span className="text-lg font-bold text-pink-600">
+                    {formatPrice(pedido.total - pedido.venta!.notas_credito.reduce((s, nc) => s + nc.total, 0))}
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // Render a POS venta card
+  const renderVentaPOS = (v: VentaRecord) => {
+    const isExp = expanded === `venta-${v.id}`;
+    const hasNC = v.notas_credito.length > 0;
+    return (
+      <div
+        key={v.id}
+        className={`bg-white rounded-2xl border transition-all duration-200 ${
+          isExp ? "border-indigo-200 shadow-lg" : "border-gray-100 hover:border-gray-200"
+        }`}
+      >
+        <button
+          onClick={() => setExpanded(isExp ? null : `venta-${v.id}`)}
+          className="w-full text-left p-5 md:p-6"
+        >
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-3 flex-wrap mb-2">
+                <div className="flex items-center gap-1.5 text-gray-900">
+                  <Hash className="w-3.5 h-3.5 text-gray-400" />
+                  <span className="font-mono font-semibold text-sm">{v.numero}</span>
+                </div>
+                <span className="inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full bg-indigo-50 text-indigo-700">
+                  <span className="w-1.5 h-1.5 rounded-full bg-indigo-400" />
+                  {v.tipo_comprobante}
+                </span>
+                {hasNC && (
+                  <span className="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full bg-red-50 text-red-600">
+                    <AlertCircle className="w-3 h-3" />
+                    NC
+                  </span>
+                )}
+                {v.saldo_pendiente > 0 && (
+                  <span className="inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-full bg-orange-50 text-orange-700 border border-orange-200">
+                    <DollarSign className="w-3 h-3" />
+                    Saldo pendiente: {formatPrice(v.saldo_pendiente)}
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-3 text-sm text-gray-400">
+                <span className="flex items-center gap-1.5">
+                  <Calendar className="w-3.5 h-3.5" />
+                  {formatDate(v.fecha + "T12:00:00")}
+                </span>
+                <span className="text-gray-200">|</span>
+                <span>{v.forma_pago}</span>
+              </div>
+            </div>
+            <div className="flex items-center gap-3 shrink-0">
+              <div className="text-right">
+                {v.notas_credito.length > 0 ? (
+                  <>
+                    <span className="text-sm text-gray-400 line-through">{formatPrice(v.total)}</span>
+                    <span className="text-lg font-bold text-indigo-600 ml-1">
+                      {formatPrice(v.total - v.notas_credito.reduce((s, nc) => s + nc.total, 0))}
+                    </span>
+                  </>
+                ) : (
+                  <span className="text-lg font-bold text-gray-900">{formatPrice(v.total)}</span>
+                )}
+              </div>
+              <div className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${isExp ? "bg-indigo-50" : "bg-gray-50"}`}>
+                {isExp ? <ChevronUp className="w-4 h-4 text-indigo-600" /> : <ChevronDown className="w-4 h-4 text-gray-400" />}
+              </div>
+            </div>
+          </div>
+        </button>
+
+        {isExp && (
+          <div className="border-t border-gray-100 mx-5 md:mx-6">
+            {v.items.length > 0 && (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-xs text-gray-400 uppercase tracking-wider">
+                    <th className="py-3 text-left font-medium">Producto</th>
+                    <th className="py-3 text-center font-medium">Cant.</th>
+                    <th className="py-3 text-right font-medium">Precio</th>
+                    <th className="py-3 text-right font-medium">Subtotal</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {v.items.map((item, idx) => {
+                    const isMedioV = item.presentacion && (item.presentacion.toLowerCase().includes("medio") || (item.unidades_por_presentacion != null && item.unidades_por_presentacion <= 0.5 && item.unidades_por_presentacion > 0));
+                    const isBox = item.presentacion && item.presentacion !== "Unidad" && (item.unidades_por_presentacion || 1) > 1;
+                    const isCombo = (item.descripcion || "").toLowerCase().includes("combo");
+                    const unitPrice = isMedioV ? item.precio_unitario / (item.unidades_por_presentacion || 0.5) : isBox ? item.precio_unitario / (item.unidades_por_presentacion || 1) : item.precio_unitario;
+                    const displayName = (item.descripcion || "")
+                      .replace(/\s*[-–]\s*Unidad(\s*\(Unidad\))?$/, "")
+                      .replace(/\s*\(Unidad\)$/, "")
+                      .replace(/(\([^)]+\))\s*\1/gi, "$1")
+                      .replace(/\s*\(Caja \(x[\d.]+\)\)$/, "")
+                      .replace(/Caja\s*\(?x?0\.5\)?/gi, "Medio Cartón")
+                      .replace(/(Medio\s*Cart[oó]n)\s*\(?\s*Medio\s*Cart[oó]n\s*\)?/gi, "$1");
+                    return (
+                    <tr key={idx} className="border-t border-gray-50">
+                      <td className="py-3 text-gray-700 font-medium">
+                        {displayName}
+                        {isCombo && (item.unidades_por_presentacion || 1) > 1 && (
+                          <span className="block text-[10px] text-gray-400 mt-0.5">
+                            Combo de {item.unidades_por_presentacion} unidades
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-3 text-center text-gray-500">{isMedioV ? item.cantidad * (item.unidades_por_presentacion || 0.5) : item.cantidad}</td>
+                      <td className="py-3 text-right text-gray-500">
+                        {formatPrice(unitPrice)}
+                        {(isBox || isCombo) && (item.unidades_por_presentacion || 1) > 1 && <span className="block text-[10px] text-gray-400">c/u</span>}
+                      </td>
+                      <td className="py-3 text-right font-semibold text-gray-900">{formatPrice(item.subtotal)}</td>
+                    </tr>
+                    );
+                  })}
+                </tbody>
+                <tfoot>
+                  <tr className="border-t border-gray-200">
+                    <td colSpan={3} className="py-3 text-right font-semibold text-gray-500 text-xs uppercase tracking-wider">Total</td>
+                    <td className="py-3 text-right font-bold text-indigo-600 text-base">{formatPrice(v.total)}</td>
+                  </tr>
+                </tfoot>
+              </table>
+            )}
+
+            {/* Payment breakdown */}
+            {v.pagos.length > 0 && (() => {
+              const pagos = v.saldo_pendiente <= 0
+                ? v.pagos.filter((p) => p.metodo_pago !== "Cuenta Corriente")
+                : v.pagos;
+              if (pagos.length === 0) return null;
+              return (
+              <div className="mt-3 bg-gray-50 rounded-xl p-4">
+                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Detalle de pago</p>
+                <div className="space-y-2">
+                  {pagos.map((p, idx) => {
+                    const isHojaRuta = p.descripcion && (p.descripcion.toLowerCase().includes("hoja de ruta") || p.descripcion.toLowerCase().includes("entrega"));
+                    const isCobro = p.descripcion && p.descripcion.toLowerCase().includes("cobro");
+                    return (
+                    <div key={idx} className="flex justify-between items-start text-sm">
+                      <div>
+                        <span className="text-gray-700 font-medium">{p.metodo_pago}</span>
+                        {p.cuenta_bancaria && <span className="text-gray-400 text-xs ml-1">→ {p.cuenta_bancaria}</span>}
+                        {p.fecha && (
+                          <span className="block text-[10px] text-gray-400 mt-0.5">
+                            {new Date(p.fecha).toLocaleDateString("es-AR", { day: "numeric", month: "short", year: "numeric" })}{" "}
+                            {new Date(p.fecha).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit", hour12: false })}
+                            {isHojaRuta ? " — Pago al momento de entrega" : isCobro ? " — Cobro posterior" : ""}
+                          </span>
+                        )}
+                      </div>
+                      <span className="font-semibold text-gray-900">{formatPrice(p.monto)}</span>
+                    </div>
+                    );
+                  })}
+                </div>
+                {v.saldo_pendiente > 0 && (
+                  <div className="mt-2 pt-2 border-t border-orange-200 flex justify-between text-sm">
+                    <span className="text-orange-600 font-medium">Saldo pendiente</span>
+                    <span className="font-bold text-orange-600">{formatPrice(v.saldo_pendiente)}</span>
+                  </div>
+                )}
+              </div>
+              );
+            })()}
+            {v.pagos.length === 0 && v.forma_pago && (
+              <div className="mt-3 bg-gray-50 rounded-xl p-4">
+                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Forma de pago</p>
+                <p className="text-sm text-gray-700">{v.forma_pago}</p>
+              </div>
+            )}
+
+            {v.notas_credito.length > 0 && (
+              <div className="mt-3 mb-4">
+                {v.notas_credito.map((nc) => (
+                  <div key={nc.id} className="bg-red-50 rounded-xl p-4 mt-2">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        <AlertCircle className="w-4 h-4 text-red-500" />
+                        <span className="text-sm font-semibold text-red-700">Nota de Crédito</span>
+                        <span className="text-xs text-red-500 font-mono">{nc.numero}</span>
+                      </div>
+                      <span className="text-sm font-bold text-red-600">-{formatPrice(nc.total)}</span>
+                    </div>
+                    {nc.items.length > 0 && (
+                      <div className="space-y-1">
+                        {nc.items.map((ni, idx) => (
+                          <div key={idx} className="flex justify-between text-xs text-red-600">
+                            <span>{ni.cantidad}x {ni.descripcion.replace(/\s*[-–]\s*Unidad(\s*\(Unidad\))?$/, "").replace(/\s*\(Unidad\)$/, "").replace(/(\([^)]+\))\s*\1/gi, "$1")}</span>
+                            <span>-{formatPrice(ni.subtotal)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+                <div className="flex justify-between items-center mt-3 pt-3 border-t border-red-200">
+                  <span className="text-sm font-semibold text-gray-700">Total final</span>
+                  <span className="text-lg font-bold text-indigo-600">
+                    {formatPrice(v.total - v.notas_credito.reduce((s, nc) => s + nc.total, 0))}
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="max-w-4xl mx-auto px-4 py-8">
       {/* Back button */}
@@ -247,7 +707,7 @@ export default function PedidosPage() {
         Volver a mi cuenta
       </Link>
 
-      <div className="flex items-center justify-between mb-8">
+      <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Mis Pedidos</h1>
           <p className="text-gray-400 text-sm mt-1">
@@ -259,29 +719,45 @@ export default function PedidosPage() {
       </div>
 
       {/* Debt summary */}
-      {(() => {
-        const deudasPedidos = pedidos.filter((p) => p.venta && p.venta.saldo_pendiente > 0).map((p) => ({ numero: p.venta!.numero, tipo: p.venta!.tipo_comprobante, monto: p.venta!.saldo_pendiente }));
-        const deudasPOS = ventasPOS.filter((v) => v.saldo_pendiente > 0).map((v) => ({ numero: v.numero, tipo: v.tipo_comprobante, monto: v.saldo_pendiente }));
-        const deudas = [...deudasPedidos, ...deudasPOS];
-        const totalDeuda = deudas.reduce((s, d) => s + d.monto, 0);
-        if (totalDeuda <= 0) return null;
-        return (
-          <div className="mb-6 bg-gradient-to-r from-orange-50 to-amber-50 border border-orange-200 rounded-2xl p-5">
-            <div className="flex items-center gap-2 mb-3">
-              <DollarSign className="w-5 h-5 text-orange-600" />
-              <span className="font-bold text-orange-800">Saldo pendiente: {formatPrice(totalDeuda)}</span>
-            </div>
-            <div className="space-y-1.5">
-              {deudas.map((d) => (
-                <div key={d.numero} className="flex justify-between items-center text-sm">
-                  <span className="text-orange-700">{d.tipo} {d.numero}</span>
-                  <span className="font-semibold text-orange-800">{formatPrice(d.monto)}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        );
-      })()}
+      <DebtSummary />
+
+      {/* Tabs */}
+      {!loading && (pedidos.length > 0 || ventasPOS.length > 0) && (
+        <div className="flex gap-1 bg-gray-100 p-1 rounded-xl mb-6">
+          <button
+            onClick={() => setActiveTab("web")}
+            className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-medium transition-all ${
+              activeTab === "web"
+                ? "bg-white shadow-sm text-gray-900"
+                : "text-gray-500 hover:text-gray-700"
+            }`}
+          >
+            <Globe className="w-4 h-4" />
+            Pedidos Web
+            {pedidos.length > 0 && (
+              <span className={`text-xs px-1.5 py-0.5 rounded-full ${activeTab === "web" ? "bg-pink-100 text-pink-700" : "bg-gray-200 text-gray-500"}`}>
+                {pedidos.length}
+              </span>
+            )}
+          </button>
+          <button
+            onClick={() => setActiveTab("local")}
+            className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-medium transition-all ${
+              activeTab === "local"
+                ? "bg-white shadow-sm text-gray-900"
+                : "text-gray-500 hover:text-gray-700"
+            }`}
+          >
+            <Store className="w-4 h-4" />
+            Compras en local
+            {ventasPOS.length > 0 && (
+              <span className={`text-xs px-1.5 py-0.5 rounded-full ${activeTab === "local" ? "bg-indigo-100 text-indigo-700" : "bg-gray-200 text-gray-500"}`}>
+                {ventasPOS.length}
+              </span>
+            )}
+          </button>
+        </div>
+      )}
 
       {loading ? (
         <div className="space-y-4">
@@ -310,463 +786,37 @@ export default function PedidosPage() {
           </Link>
         </div>
       ) : (
-        <div className="space-y-4">
-          {pedidos.map((pedido) => {
-            const badge = estadoBadge[pedido.estado] || { bg: "bg-gray-50", text: "text-gray-700", dot: "bg-gray-400" };
-            const isExpanded = expanded === `pedido-${pedido.id}`;
-
-            return (
-              <div
-                key={pedido.id}
-                className={`bg-white rounded-2xl border transition-all duration-200 ${
-                  isExpanded ? "border-pink-200 shadow-lg" : "border-gray-100 hover:border-gray-200"
-                }`}
-              >
-                <button
-                  onClick={() => setExpanded(isExpanded ? null : `pedido-${pedido.id}`)}
-                  className="w-full text-left p-5 md:p-6"
-                >
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="flex-1 min-w-0">
-                      {/* Top row: number + status */}
-                      <div className="flex items-center gap-3 flex-wrap mb-2">
-                        <div className="flex items-center gap-1.5 text-gray-900">
-                          <Hash className="w-3.5 h-3.5 text-gray-400" />
-                          <span className="font-mono font-semibold text-sm">{pedido.numero}</span>
-                        </div>
-                        <span className={`inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full ${badge.bg} ${badge.text}`}>
-                          <span className={`w-1.5 h-1.5 rounded-full ${badge.dot}`} />
-                          <span className="capitalize">{pedido.estado}</span>
-                        </span>
-                        <span className="inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full bg-pink-50 text-pink-700">
-                          <span className="w-1.5 h-1.5 rounded-full bg-pink-400" />
-                          Pedido Web
-                        </span>
-                        {pedido.venta?.notas_credito && pedido.venta.notas_credito.length > 0 && (
-                          <span className="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full bg-red-50 text-red-600">
-                            <AlertCircle className="w-3 h-3" />
-                            NC
-                          </span>
-                        )}
-                        {pedido.venta && pedido.venta.saldo_pendiente > 0 && (
-                          <span className="inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-full bg-orange-50 text-orange-700 border border-orange-200">
-                            <DollarSign className="w-3 h-3" />
-                            Saldo pendiente: {formatPrice(pedido.venta.saldo_pendiente)}
-                          </span>
-                        )}
-                      </div>
-
-                      {/* Date + items count */}
-                      <div className="flex items-center gap-3 text-sm text-gray-400">
-                        <span className="flex items-center gap-1.5">
-                          <Calendar className="w-3.5 h-3.5" />
-                          {formatDate(pedido.created_at, true)}
-                        </span>
-                        <span className="text-gray-200">|</span>
-                        <span>
-                          {pedido.items.length} {pedido.items.length === 1 ? "producto" : "productos"}
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* Total + chevron */}
-                    <div className="flex items-center gap-3 shrink-0">
-                      <div className="text-right">
-                        {pedido.venta?.notas_credito && pedido.venta.notas_credito.length > 0 ? (
-                          <>
-                            <span className="text-sm text-gray-400 line-through">{formatPrice(pedido.total)}</span>
-                            <span className="text-lg font-bold text-pink-600 ml-1">
-                              {formatPrice(pedido.total - pedido.venta.notas_credito.reduce((s, nc) => s + nc.total, 0))}
-                            </span>
-                          </>
-                        ) : (
-                          <span className="text-lg font-bold text-gray-900">{formatPrice(pedido.total)}</span>
-                        )}
-                      </div>
-                      <div className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${
-                        isExpanded ? "bg-pink-50" : "bg-gray-50"
-                      }`}>
-                        {isExpanded ? (
-                          <ChevronUp className={`w-4 h-4 ${isExpanded ? "text-pink-600" : "text-gray-400"}`} />
-                        ) : (
-                          <ChevronDown className="w-4 h-4 text-gray-400" />
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </button>
-
-                {/* Expanded items */}
-                {isExpanded && (
-                  <div className="border-t border-gray-100 mx-5 md:mx-6">
-                    {pedido.items.length > 0 && (
-                      <table className="w-full text-sm">
-                        <thead>
-                          <tr className="text-xs text-gray-400 uppercase tracking-wider">
-                            <th className="py-3 text-left font-medium">Producto</th>
-                            <th className="py-3 text-center font-medium">Cant.</th>
-                            <th className="py-3 text-right font-medium">Precio</th>
-                            <th className="py-3 text-right font-medium">Subtotal</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {pedido.items.map((item) => {
-                            const isMedio = item.presentacion && (item.presentacion.toLowerCase().includes("medio") || (item.unidades_por_presentacion != null && item.unidades_por_presentacion <= 0.5 && item.unidades_por_presentacion > 0));
-                            const isBox = item.presentacion && item.presentacion !== "Unidad" && (item.unidades_por_presentacion || 1) > 1;
-                            const isCombo = item.nombre.toLowerCase().includes("combo");
-                            const unitPrice = isMedio ? item.precio_unitario / (item.unidades_por_presentacion || 0.5) : isBox ? item.precio_unitario / (item.unidades_por_presentacion || 1) : item.precio_unitario;
-                            // Clean up name: remove duplicate presentation info
-                            let displayName = item.nombre
-                              .replace(/\s*[-–]\s*Unidad(\s*\(Unidad\))?$/, "")
-                              .replace(/\s*\(Unidad\)$/, "")
-                              .replace(/(\([^)]+\))\s*\1/gi, "$1")
-                              .replace(/Caja\s*\(?x?0\.5\)?/gi, "Medio Cartón")
-                              .replace(/(Medio\s*Cart[oó]n)\s*\(?\s*Medio\s*Cart[oó]n\s*\)?/gi, "$1");
-                            // Don't append presentation if already in name
-                            const nameAlreadyHasPres = (isBox || isMedio) && displayName.toLowerCase().includes(isMedio ? "medio" : item.presentacion.toLowerCase());
-                            if (isBox && !nameAlreadyHasPres) {
-                              const presClean = item.presentacion.replace(/\s*\([^)]*\)\s*$/, "");
-                              displayName = `${displayName} (${presClean})`;
-                            }
-                            return (
-                            <tr key={item.id} className="border-t border-gray-50">
-                              <td className="py-3 text-gray-700 font-medium">
-                                {displayName}
-                                {isCombo && (item.unidades_por_presentacion || 1) > 1 && (
-                                  <span className="block text-[10px] text-gray-400 mt-0.5">
-                                    Combo de {item.unidades_por_presentacion} unidades
-                                  </span>
-                                )}
-                              </td>
-                              <td className="py-3 text-center text-gray-500">{isMedio ? item.cantidad * (item.unidades_por_presentacion || 0.5) : item.cantidad}</td>
-                              <td className="py-3 text-right text-gray-500">
-                                {formatPrice(unitPrice)}
-                                {(isBox || isCombo) && (item.unidades_por_presentacion || 1) > 1 && <span className="block text-[10px] text-gray-400">c/u</span>}
-                              </td>
-                              <td className="py-3 text-right font-semibold text-gray-900">
-                                {formatPrice(item.precio_unitario * item.cantidad)}
-                              </td>
-                            </tr>
-                            );
-                          })}
-                        </tbody>
-                        <tfoot>
-                          <tr className="border-t border-gray-200">
-                            <td colSpan={3} className="py-3 text-right font-semibold text-gray-500 text-xs uppercase tracking-wider">
-                              Total
-                            </td>
-                            <td className="py-3 text-right font-bold text-pink-600 text-base">
-                              {formatPrice(pedido.total)}
-                            </td>
-                          </tr>
-                        </tfoot>
-                      </table>
-                    )}
-
-                    {/* Payment breakdown */}
-                    {pedido.venta && pedido.venta.pagos.length > 0 && (() => {
-                      // Filter: hide "Cuenta Corriente" entries if debt is fully paid
-                      const pagos = pedido.venta.saldo_pendiente <= 0
-                        ? pedido.venta.pagos.filter((p) => p.metodo_pago !== "Cuenta Corriente")
-                        : pedido.venta.pagos;
-                      if (pagos.length === 0) return null;
-                      return (
-                      <div className="mt-3 bg-gray-50 rounded-xl p-4">
-                        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Detalle de pago</p>
-                        <div className="space-y-2">
-                          {pagos.map((p, idx) => {
-                            const isHojaRuta = p.descripcion && (p.descripcion.toLowerCase().includes("hoja de ruta") || p.descripcion.toLowerCase().includes("entrega"));
-                            const isCobro = p.descripcion && p.descripcion.toLowerCase().includes("cobro");
-                            return (
-                            <div key={idx} className="flex justify-between items-start text-sm">
-                              <div>
-                                <span className="text-gray-700 font-medium">{p.metodo_pago}</span>
-                                {p.cuenta_bancaria && <span className="text-gray-400 text-xs ml-1">→ {p.cuenta_bancaria}</span>}
-                                {p.fecha && (
-                                  <span className="block text-[10px] text-gray-400 mt-0.5">
-                                    {new Date(p.fecha).toLocaleDateString("es-AR", { day: "numeric", month: "short", year: "numeric" })}{" "}
-                                    {new Date(p.fecha).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit", hour12: false })}
-                                    {isHojaRuta ? " — Pago al momento de entrega" : isCobro ? " — Cobro posterior" : ""}
-                                  </span>
-                                )}
-                              </div>
-                              <span className="font-semibold text-gray-900">{formatPrice(p.monto)}</span>
-                            </div>
-                            );
-                          })}
-                        </div>
-                        {pedido.venta.saldo_pendiente > 0 && (
-                          <div className="mt-2 pt-2 border-t border-orange-200 flex justify-between text-sm">
-                            <span className="text-orange-600 font-medium">Saldo pendiente</span>
-                            <span className="font-bold text-orange-600">{formatPrice(pedido.venta.saldo_pendiente)}</span>
-                          </div>
-                        )}
-                      </div>
-                      );
-                    })()}
-                    {pedido.venta && pedido.venta.pagos.length === 0 && pedido.venta.forma_pago && (
-                      <div className="mt-3 bg-gray-50 rounded-xl p-4">
-                        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Forma de pago</p>
-                        <p className="text-sm text-gray-700">{pedido.venta.forma_pago}</p>
-                      </div>
-                    )}
-
-                    {/* Notas de crédito */}
-                    {pedido.venta?.notas_credito && pedido.venta.notas_credito.length > 0 && (
-                      <div className="mt-3 mb-4">
-                        {pedido.venta.notas_credito.map((nc) => (
-                          <div key={nc.id} className="bg-red-50 rounded-xl p-4 mt-2">
-                            <div className="flex items-center justify-between mb-2">
-                              <div className="flex items-center gap-2">
-                                <AlertCircle className="w-4 h-4 text-red-500" />
-                                <span className="text-sm font-semibold text-red-700">Nota de Crédito</span>
-                                <span className="text-xs text-red-500 font-mono">{nc.numero}</span>
-                              </div>
-                              <span className="text-sm font-bold text-red-600">-{formatPrice(nc.total)}</span>
-                            </div>
-                            {nc.items.length > 0 && (
-                              <div className="space-y-1">
-                                {nc.items.map((ni, idx) => (
-                                  <div key={idx} className="flex justify-between text-xs text-red-600">
-                                    <span>{ni.cantidad}x {ni.descripcion.replace(/\s*[-–]\s*Unidad(\s*\(Unidad\))?$/, "").replace(/\s*\(Unidad\)$/, "").replace(/(\([^)]+\))\s*\1/gi, "$1")}</span>
-                                    <span>-{formatPrice(ni.subtotal)}</span>
-                                  </div>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                        ))}
-                        {/* Total final after NCs */}
-                        <div className="flex justify-between items-center mt-3 pt-3 border-t border-red-200">
-                          <span className="text-sm font-semibold text-gray-700">Total final</span>
-                          <span className="text-lg font-bold text-pink-600">
-                            {formatPrice(pedido.total - pedido.venta!.notas_credito.reduce((s, nc) => s + nc.total, 0))}
-                          </span>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-          {/* POS ventas (not from tienda) */}
-          {ventasPOS.length > 0 && (
-            <>
-              <div className="flex items-center gap-2 mt-6 mb-3">
-                <ShoppingBag className="w-4 h-4 text-gray-400" />
-                <span className="text-sm font-semibold text-gray-500">Compras en local</span>
-              </div>
-              {ventasPOS.map((v) => {
-                const isExp = expanded === `venta-${v.id}`;
-                const hasNC = v.notas_credito.length > 0;
-                return (
-                  <div
-                    key={v.id}
-                    className={`bg-white rounded-2xl border transition-all duration-200 ${
-                      isExp ? "border-pink-200 shadow-lg" : "border-gray-100 hover:border-gray-200"
-                    }`}
-                  >
-                    <button
-                      onClick={() => setExpanded(isExp ? null : `venta-${v.id}`)}
-                      className="w-full text-left p-5 md:p-6"
-                    >
-                      <div className="flex items-start justify-between gap-4">
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-3 flex-wrap mb-2">
-                            <div className="flex items-center gap-1.5 text-gray-900">
-                              <Hash className="w-3.5 h-3.5 text-gray-400" />
-                              <span className="font-mono font-semibold text-sm">{v.numero}</span>
-                            </div>
-                            <span className="inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full bg-blue-50 text-blue-700">
-                              <span className="w-1.5 h-1.5 rounded-full bg-blue-400" />
-                              {v.tipo_comprobante}
-                            </span>
-                            {hasNC && (
-                              <span className="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full bg-red-50 text-red-600">
-                                <AlertCircle className="w-3 h-3" />
-                                NC
-                              </span>
-                            )}
-                            {v.saldo_pendiente > 0 && (
-                              <span className="inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-full bg-orange-50 text-orange-700 border border-orange-200">
-                                <DollarSign className="w-3 h-3" />
-                                Saldo pendiente: {formatPrice(v.saldo_pendiente)}
-                              </span>
-                            )}
-                          </div>
-                          <div className="flex items-center gap-3 text-sm text-gray-400">
-                            <span className="flex items-center gap-1.5">
-                              <Calendar className="w-3.5 h-3.5" />
-                              {formatDate(v.fecha + "T12:00:00")}
-                            </span>
-                            <span className="text-gray-200">|</span>
-                            <span>{v.forma_pago}</span>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-3 shrink-0">
-                          <div className="text-right">
-                            {v.notas_credito.length > 0 ? (
-                              <>
-                                <span className="text-sm text-gray-400 line-through">{formatPrice(v.total)}</span>
-                                <span className="text-lg font-bold text-pink-600 ml-1">
-                                  {formatPrice(v.total - v.notas_credito.reduce((s, nc) => s + nc.total, 0))}
-                                </span>
-                              </>
-                            ) : (
-                              <span className="text-lg font-bold text-gray-900">{formatPrice(v.total)}</span>
-                            )}
-                          </div>
-                          <div className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${isExp ? "bg-pink-50" : "bg-gray-50"}`}>
-                            {isExp ? <ChevronUp className="w-4 h-4 text-pink-600" /> : <ChevronDown className="w-4 h-4 text-gray-400" />}
-                          </div>
-                        </div>
-                      </div>
-                    </button>
-
-                    {isExp && (
-                      <div className="border-t border-gray-100 mx-5 md:mx-6">
-                        {v.items.length > 0 && (
-                          <table className="w-full text-sm">
-                            <thead>
-                              <tr className="text-xs text-gray-400 uppercase tracking-wider">
-                                <th className="py-3 text-left font-medium">Producto</th>
-                                <th className="py-3 text-center font-medium">Cant.</th>
-                                <th className="py-3 text-right font-medium">Precio</th>
-                                <th className="py-3 text-right font-medium">Subtotal</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {v.items.map((item, idx) => {
-                                const isMedioV = item.presentacion && (item.presentacion.toLowerCase().includes("medio") || (item.unidades_por_presentacion != null && item.unidades_por_presentacion <= 0.5 && item.unidades_por_presentacion > 0));
-                                const isBox = item.presentacion && item.presentacion !== "Unidad" && (item.unidades_por_presentacion || 1) > 1;
-                                const isCombo = (item.descripcion || "").toLowerCase().includes("combo");
-                                const unitPrice = isMedioV ? item.precio_unitario / (item.unidades_por_presentacion || 0.5) : isBox ? item.precio_unitario / (item.unidades_por_presentacion || 1) : item.precio_unitario;
-                                // Clean "(Unidad)" and duplicate presentation from description
-                                const displayName = (item.descripcion || "")
-                                  .replace(/\s*[-–]\s*Unidad(\s*\(Unidad\))?$/, "")
-                                  .replace(/\s*\(Unidad\)$/, "")
-                                  .replace(/(\([^)]+\))\s*\1/gi, "$1")
-                                  .replace(/\s*\(Caja \(x[\d.]+\)\)$/, "")
-                                  .replace(/Caja\s*\(?x?0\.5\)?/gi, "Medio Cartón")
-                                  .replace(/(Medio\s*Cart[oó]n)\s*\(?\s*Medio\s*Cart[oó]n\s*\)?/gi, "$1");
-                                return (
-                                <tr key={idx} className="border-t border-gray-50">
-                                  <td className="py-3 text-gray-700 font-medium">
-                                    {displayName}
-                                    {isCombo && (item.unidades_por_presentacion || 1) > 1 && (
-                                      <span className="block text-[10px] text-gray-400 mt-0.5">
-                                        Combo de {item.unidades_por_presentacion} unidades
-                                      </span>
-                                    )}
-                                  </td>
-                                  <td className="py-3 text-center text-gray-500">{isMedioV ? item.cantidad * (item.unidades_por_presentacion || 0.5) : item.cantidad}</td>
-                                  <td className="py-3 text-right text-gray-500">
-                                    {formatPrice(unitPrice)}
-                                    {(isBox || isCombo) && (item.unidades_por_presentacion || 1) > 1 && <span className="block text-[10px] text-gray-400">c/u</span>}
-                                  </td>
-                                  <td className="py-3 text-right font-semibold text-gray-900">{formatPrice(item.subtotal)}</td>
-                                </tr>
-                                );
-                              })}
-                            </tbody>
-                            <tfoot>
-                              <tr className="border-t border-gray-200">
-                                <td colSpan={3} className="py-3 text-right font-semibold text-gray-500 text-xs uppercase tracking-wider">Total</td>
-                                <td className="py-3 text-right font-bold text-pink-600 text-base">{formatPrice(v.total)}</td>
-                              </tr>
-                            </tfoot>
-                          </table>
-                        )}
-
-                        {/* Payment breakdown */}
-                        {v.pagos.length > 0 && (() => {
-                          const pagos = v.saldo_pendiente <= 0
-                            ? v.pagos.filter((p) => p.metodo_pago !== "Cuenta Corriente")
-                            : v.pagos;
-                          if (pagos.length === 0) return null;
-                          return (
-                          <div className="mt-3 bg-gray-50 rounded-xl p-4">
-                            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Detalle de pago</p>
-                            <div className="space-y-2">
-                              {pagos.map((p, idx) => {
-                                const isHojaRuta = p.descripcion && (p.descripcion.toLowerCase().includes("hoja de ruta") || p.descripcion.toLowerCase().includes("entrega"));
-                                const isCobro = p.descripcion && p.descripcion.toLowerCase().includes("cobro");
-                                return (
-                                <div key={idx} className="flex justify-between items-start text-sm">
-                                  <div>
-                                    <span className="text-gray-700 font-medium">{p.metodo_pago}</span>
-                                    {p.cuenta_bancaria && <span className="text-gray-400 text-xs ml-1">→ {p.cuenta_bancaria}</span>}
-                                    {p.fecha && (
-                                      <span className="block text-[10px] text-gray-400 mt-0.5">
-                                        {new Date(p.fecha).toLocaleDateString("es-AR", { day: "numeric", month: "short", year: "numeric" })}{" "}
-                                        {new Date(p.fecha).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit", hour12: false })}
-                                        {isHojaRuta ? " — Pago al momento de entrega" : isCobro ? " — Cobro posterior" : ""}
-                                      </span>
-                                    )}
-                                  </div>
-                                  <span className="font-semibold text-gray-900">{formatPrice(p.monto)}</span>
-                                </div>
-                                );
-                              })}
-                            </div>
-                            {v.saldo_pendiente > 0 && (
-                              <div className="mt-2 pt-2 border-t border-orange-200 flex justify-between text-sm">
-                                <span className="text-orange-600 font-medium">Saldo pendiente</span>
-                                <span className="font-bold text-orange-600">{formatPrice(v.saldo_pendiente)}</span>
-                              </div>
-                            )}
-                          </div>
-                          );
-                        })()}
-                        {v.pagos.length === 0 && v.forma_pago && (
-                          <div className="mt-3 bg-gray-50 rounded-xl p-4">
-                            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Forma de pago</p>
-                            <p className="text-sm text-gray-700">{v.forma_pago}</p>
-                          </div>
-                        )}
-
-                        {v.notas_credito.length > 0 && (
-                          <div className="mt-3 mb-4">
-                            {v.notas_credito.map((nc) => (
-                              <div key={nc.id} className="bg-red-50 rounded-xl p-4 mt-2">
-                                <div className="flex items-center justify-between mb-2">
-                                  <div className="flex items-center gap-2">
-                                    <AlertCircle className="w-4 h-4 text-red-500" />
-                                    <span className="text-sm font-semibold text-red-700">Nota de Crédito</span>
-                                    <span className="text-xs text-red-500 font-mono">{nc.numero}</span>
-                                  </div>
-                                  <span className="text-sm font-bold text-red-600">-{formatPrice(nc.total)}</span>
-                                </div>
-                                {nc.items.length > 0 && (
-                                  <div className="space-y-1">
-                                    {nc.items.map((ni, idx) => (
-                                      <div key={idx} className="flex justify-between text-xs text-red-600">
-                                        <span>{ni.cantidad}x {ni.descripcion.replace(/\s*[-–]\s*Unidad(\s*\(Unidad\))?$/, "").replace(/\s*\(Unidad\)$/, "").replace(/(\([^)]+\))\s*\1/gi, "$1")}</span>
-                                        <span>-{formatPrice(ni.subtotal)}</span>
-                                      </div>
-                                    ))}
-                                  </div>
-                                )}
-                              </div>
-                            ))}
-                            {/* Total final after NCs */}
-                            <div className="flex justify-between items-center mt-3 pt-3 border-t border-red-200">
-                              <span className="text-sm font-semibold text-gray-700">Total final</span>
-                              <span className="text-lg font-bold text-pink-600">
-                                {formatPrice(v.total - v.notas_credito.reduce((s, nc) => s + nc.total, 0))}
-                              </span>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </>
+        <>
+          {/* Web orders tab */}
+          {activeTab === "web" && (
+            <div className="space-y-4">
+              {pedidos.length === 0 ? (
+                <div className="bg-white rounded-2xl border border-gray-100 p-10 text-center">
+                  <Globe className="w-8 h-8 text-gray-300 mx-auto mb-3" />
+                  <p className="text-gray-500 font-medium">No tenés pedidos web</p>
+                  <p className="text-gray-400 text-sm mt-1">Tus pedidos de la tienda online aparecerán acá</p>
+                </div>
+              ) : (
+                pedidos.map(renderPedido)
+              )}
+            </div>
           )}
-        </div>
+
+          {/* In-store purchases tab */}
+          {activeTab === "local" && (
+            <div className="space-y-4">
+              {ventasPOS.length === 0 ? (
+                <div className="bg-white rounded-2xl border border-gray-100 p-10 text-center">
+                  <Store className="w-8 h-8 text-gray-300 mx-auto mb-3" />
+                  <p className="text-gray-500 font-medium">No tenés compras en local</p>
+                  <p className="text-gray-400 text-sm mt-1">Tus compras presenciales aparecerán acá</p>
+                </div>
+              ) : (
+                ventasPOS.map(renderVentaPOS)
+              )}
+            </div>
+          )}
+        </>
       )}
     </div>
   );
